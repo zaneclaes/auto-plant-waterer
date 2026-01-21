@@ -7,6 +7,9 @@
 
 #include <esp_err.h>
 
+#define ZB_MANUFACTURER_NAME "\x0b" "inZania LLC"
+#define ZB_MODEL_IDENTIFIER  "\x13" "Auto Plant Waterer"
+
 #define NVS_NAMESPACE      "wifi_cfg"
 #define KEY_STA_SSID       "sta_ssid"
 #define KEY_STA_PASS       "sta_pass"
@@ -29,6 +32,7 @@ typedef struct {
   char ap_pass[MAX_PASS_LEN + 1];
 } wifi_cfg_t;
 
+void cfg_start();
 esp_err_t load_wifi_cfg(wifi_cfg_t *cfg);
 esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg);
 

@@ -89,3 +89,16 @@ esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg) {
   nvs_close(h);
   return ESP_OK;
 }
+
+void cfg_start() {
+
+  /* Zigbee examples expect NVS available (commissioning, network params, etc.) */
+  esp_err_t err = nvs_flash_init();
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ESP_ERROR_CHECK(nvs_flash_init());
+  } else {
+    ESP_ERROR_CHECK(err);
+  }
+
+}

@@ -9,7 +9,10 @@ set(MATTER_SDK_PATH "$ENV{CHIP_ROOT}" CACHE PATH "connectedhomeip root" FORCE)
 set(ESP_MATTER_PATH "$ENV{ESP_MATTER_PATH}" CACHE PATH "esp-matter root" FORCE)
 
 # Point IDF at the esp-matter component set (NOT the repo root)
-set(EXTRA_COMPONENT_DIRS)
+set(_managed_components_dir "${CMAKE_SOURCE_DIR}/managed_components")
+if(EXISTS "${_managed_components_dir}")
+    list(APPEND EXTRA_COMPONENT_DIRS "${_managed_components_dir}")
+endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(auto-plant-waterer)
