@@ -1,0 +1,164 @@
+<!doctype html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Wi-Fi Setup</title>
+    <style>
+        body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:16px;max-width:720px;margin:auto;}
+        label{display:block;margin-top:12px;font-weight:600;}
+        input,select{width:100%;padding:10px;font-size:16px;box-sizing:border-box;}
+        button{margin-top:16px;padding:12px 14px;font-size:16px;}
+        .hint{color:#555;font-size:13px;margin-top:6px;}
+        .link{display:inline-block;margin-top:8px;font-size:14px;}
+        .hidden{display:none;}
+    </style>
+</head>
+
+<body>
+<h2>Configure Wi-Fi</h2>
+<p class="hint">After saving, the device restarts Wi-Fi using the new settings.</p>
+
+<form method="POST" action="/save">
+    <label>Station SSID (connect to your Wi-Fi)</label>
+
+    <!-- Dropdown populated from /scan -->
+    <select id="sta_ssid_select" name="sta_ssid"></select>
+
+    <!-- Manual input (same name so form submits sta_ssid either way) -->
+    <input id="sta_ssid_manual" class="hidden" name="sta_ssid" maxlength="32" value=""/>
+
+    <a href="#" id="toggle_ssid" class="link">Enter SSID manually</a>
+    <div class="hint" id="scan_status">Scanning…</div>
+
+    <label>Station Password</label>
+    <input id="sta_pass" name="sta_pass" maxlength="64" value=""/>
+
+    <label>Device AP SSID (fallback hotspot)</label>
+    <input id="ap_ssid" name="ap_ssid" maxlength="32" value=""/>
+
+    <label>Device AP Password</label>
+    <input id="ap_pass" name="ap_pass" maxlength="64" value=""/>
+    <div class="hint">AP password must be at least 8 characters for WPA2. Leave blank to create an open AP.</div>
+
+    <button type="submit">Save</button>
+</form>
+
+<script>
+    (function () {
+        const sel    = document.getElementById('sta_ssid_select');
+        const manual = document.getElementById('sta_ssid_manual');
+        const toggle = document.getElementById('toggle_ssid');
+        const status = document.getElementById('scan_status');
+
+        const staPass = document.getElementById('sta_pass');
+        const apSsid  = document.getElementById('ap_ssid');
+        const apPass  = document.getElementById('ap_pass');
+
+        let manualMode = false;
+        let savedStaSsid = '';
+
+        function setManualMode(on) {
+            manualMode = on;
+            if (on) {
+                sel.classList.add('hidden');
+                manual.classList.remove('hidden');
+                toggle.textContent = 'Choose from scanned networks';
+                if (!manual.value && sel.value) manual.value = sel.value;
+            } else {
+                manual.classList.add('hidden');
+                sel.classList.remove('hidden');
+                toggle.textContent = 'Enter SSID manually';
+
+                if (manual.value) {
+                    let found = false;
+                    for (let i = 0; i < sel.options.length; i++) {
+                        if (sel.options[i].value === manual.value) { found = true; break; }
+                    }
+                    if (!found) {
+                        const opt = document.createElement('option');
+                        opt.value = manual.value;
+                        opt.textContent = manual.value + ' (manual)';
+                        sel.insertBefore(opt, sel.firstChild);
+                    }
+                    sel.value = manual.value;
+                }
+            }
+        }
+
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            setManualMode(!manualMode);
+        });
+
+        function populateSelect(ssids) {
+            sel.innerHTML = '';
+
+            if (!ssids || ssids.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = '(No networks found)';
+                sel.appendChild(opt);
+                status.textContent = 'No networks found. You can enter the SSID manually.';
+                setManualMode(true);
+                return;
+            }
+
+            ssids.forEach(function (s) {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                sel.appendChild(opt);
+            });
+
+            if (savedStaSsid) {
+                let found = false;
+                for (let i = 0; i < sel.options.length; i++) {
+                    if (sel.options[i].value === savedStaSsid) { found = true; break; }
+                }
+                if (found) {
+                    sel.value = savedStaSsid;
+                } else {
+                    const opt = document.createElement('option');
+                    opt.value = savedStaSsid;
+                    opt.textContent = savedStaSsid + ' (saved)';
+                    sel.insertBefore(opt, sel.firstChild);
+                    sel.value = savedStaSsid;
+                }
+            }
+
+            status.textContent = 'Select your network from the list (or enter manually).';
+        }
+
+        function loadScan() {
+            fetch('/scan', { cache: 'no-store' })
+                .then(function (r) { return r.json(); })
+                .then(function (j) { populateSelect(j.ssids); })
+                .catch(function () {
+                    status.textContent = 'Scan failed. You can enter the SSID manually.';
+                    setManualMode(true);
+                });
+        }
+
+        // 1) Load config (saved values) first, then scan
+        fetch('/config', { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (cfg) {
+                savedStaSsid = (cfg.sta_ssid || '');
+                manual.value = savedStaSsid;
+
+                staPass.value = (cfg.sta_pass || '');
+                apSsid.value  = (cfg.ap_ssid  || '');
+                apPass.value  = (cfg.ap_pass  || '');
+
+                // If there is a saved SSID but scan doesn't show it, dropdown will add "(saved)" option.
+                loadScan();
+            })
+            .catch(function () {
+                // If config fails, still allow scanning + manual entry
+                savedStaSsid = '';
+                loadScan();
+            });
+    })();
+</script>
+</body>
+</html>
