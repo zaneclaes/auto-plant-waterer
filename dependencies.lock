@@ -1,4 +1,34 @@
 dependencies:
+  espp/base_component:
+    dependencies: []
+    source:
+      path: /Users/zaneclaes/esp/auto-plant-waterer/managed_components/espp__base_component
+      type: local
+    version: 1.0.33
+  espp/base_peripheral:
+    dependencies: []
+    source:
+      path: /Users/zaneclaes/esp/auto-plant-waterer/managed_components/espp__base_peripheral
+      type: local
+    version: 1.0.33
+  espp/format:
+    dependencies: []
+    source:
+      path: /Users/zaneclaes/esp/auto-plant-waterer/managed_components/espp__format
+      type: local
+    version: 1.0.33
+  espp/logger:
+    dependencies: []
+    source:
+      path: /Users/zaneclaes/esp/auto-plant-waterer/managed_components/espp__logger
+      type: local
+    version: 1.0.33
+  espp/vl53l:
+    dependencies: []
+    source:
+      path: /Users/zaneclaes/esp/auto-plant-waterer/managed_components/espp__vl53l
+      type: local
+    version: 1.0.33
   espressif/esp-zboss-lib:
     dependencies: []
     source:
@@ -22,10 +52,15 @@ dependencies:
       type: idf
     version: 5.5.1
 direct_dependencies:
+- espp/base_component
+- espp/base_peripheral
+- espp/format
+- espp/logger
+- espp/vl53l
 - espressif/esp-zboss-lib
 - espressif/esp-zigbee-lib
 - espressif/mdns
 - idf
-manifest_hash: fb16bcc5d5ede2d027e0a65140a4d1646a97440e3d0898028695d7ca5934e973
+manifest_hash: 79e977b305a862793eff5216eb90c873f11eb2b308c599f3bfe76e223dcc5226
 target: esp32c6
 version: 2.0.0

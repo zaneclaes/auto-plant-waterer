@@ -6,6 +6,7 @@ idf_component_register(
         nvs_flash
         esp_event
   PRIV_REQUIRES
+        esp_adc
         esp_timer
         esp_netif
         esp_wifi
