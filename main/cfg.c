@@ -57,8 +57,8 @@ esp_err_t load_wifi_cfg(wifi_cfg_t *cfg) {
 
   ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_STA_SSID, cfg->sta_ssid, sizeof(cfg->sta_ssid)));
   ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_STA_PASS, cfg->sta_pass, sizeof(cfg->sta_pass)));
-  ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_AP_SSID,  cfg->ap_ssid,  sizeof(cfg->ap_ssid)));
-  ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_AP_PASS,  cfg->ap_pass,  sizeof(cfg->ap_pass)));
+  ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_AP_SSID, cfg->ap_ssid, sizeof(cfg->ap_ssid)));
+  ESP_ERROR_CHECK(nvs_get_str_or_empty(h, KEY_AP_PASS, cfg->ap_pass, sizeof(cfg->ap_pass)));
 
   nvs_close(h);
 
@@ -82,8 +82,8 @@ esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg) {
 
   ESP_ERROR_CHECK(nvs_set_str(h, KEY_STA_SSID, cfg->sta_ssid));
   ESP_ERROR_CHECK(nvs_set_str(h, KEY_STA_PASS, cfg->sta_pass));
-  ESP_ERROR_CHECK(nvs_set_str(h, KEY_AP_SSID,  cfg->ap_ssid));
-  ESP_ERROR_CHECK(nvs_set_str(h, KEY_AP_PASS,  cfg->ap_pass));
+  ESP_ERROR_CHECK(nvs_set_str(h, KEY_AP_SSID, cfg->ap_ssid));
+  ESP_ERROR_CHECK(nvs_set_str(h, KEY_AP_PASS, cfg->ap_pass));
 
   ESP_ERROR_CHECK(nvs_commit(h));
   nvs_close(h);
@@ -91,7 +91,6 @@ esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg) {
 }
 
 void cfg_start() {
-
   /* Zigbee examples expect NVS available (commissioning, network params, etc.) */
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -100,5 +99,4 @@ void cfg_start() {
   } else {
     ESP_ERROR_CHECK(err);
   }
-
 }
