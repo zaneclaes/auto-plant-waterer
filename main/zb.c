@@ -21,6 +21,8 @@
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 // #include "zcl/esp_zigbee_zcl_analog_input.h"
+#include "esp_pm.h"
+#include "esp_timer.h"
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
 
 /* TAG */
@@ -76,6 +78,47 @@ static esp_err_t tof_read_distance_mm(uint16_t *out_mm);
 
 /* Zigbee handlers */
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message);
+/* -----------------------------
+ * LOCK; prevent power management while joining...
+ * ----------------------------- */
+
+static esp_pm_lock_handle_t s_pm_no_ls_lock;
+static esp_pm_lock_handle_t s_pm_cpu_max_lock;
+static esp_timer_handle_t s_release_timer;
+
+static void pm_lock_hold_for_join(void) {
+  ESP_LOGI(TAG, "Pausing power management...");
+  if (!s_pm_no_ls_lock) {
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "zb_join", &s_pm_no_ls_lock));
+  }
+  if (!s_pm_cpu_max_lock) {
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "zb_join_cpu", &s_pm_cpu_max_lock));
+  }
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_no_ls_lock));
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
+}
+
+static void pm_lock_release_after_join(void *arg) {
+  if (s_pm_no_ls_lock) {
+    ESP_LOGI(TAG, "Resuming power management...");
+    esp_pm_lock_release(s_pm_no_ls_lock);
+  }
+  if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
+}
+
+static void start_release_timer_ms(uint32_t ms) {
+  if (!s_release_timer) {
+    const esp_timer_create_args_t targs = {
+      .callback = &pm_lock_release_after_join,
+      .name = "zb_release_ls",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_release_timer));
+  }
+
+  ESP_LOGI(TAG, "Starting power management timer...");
+  esp_timer_stop(s_release_timer);
+  ESP_ERROR_CHECK(esp_timer_start_once(s_release_timer, (uint64_t)ms * 1000ULL));
+}
 
 /* -----------------------------
  * GPIO / PUMPS
@@ -210,7 +253,7 @@ static esp_err_t tof_read_distance_mm(uint16_t *out_mm) {
   /* TODO: replace with real sensor read
      This stub just returns a slowly changing fake value. */
   static uint16_t fake = 200;
-  fake += 3;
+  fake += 6;
   if (fake > 700) fake = 200;
   *out_mm = fake;
   return ESP_OK;
@@ -427,13 +470,19 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
                  esp_zb_get_pan_id(), esp_zb_get_short_address());
         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
         humidity_bind_to_coordinator();
-
-        esp_zb_sleep_enable(true);
-        esp_zb_set_rx_on_when_idle(false);
+        start_release_timer_ms(120000);
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
         /* schedule retry (see wrapper in section 3) */
         esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
+      }
+      break;
+
+    case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
+      EventBits_t bits = xEventGroupGetBits(s_zb_events);
+      if (bits & ZB_JOINED_BIT) {
+        // ESP_LOGI(TAG, "Zigbee sleeping...?");
+        esp_zb_sleep_now();
       }
       break;
 
@@ -477,6 +526,8 @@ static void zigbee_task(void *pv) {
     },
   };
 
+  esp_zb_sleep_enable(true);
+  esp_zb_set_rx_on_when_idle(false);
   esp_zb_init(&zb_cfg);
   // esp_zb_zcl_analog_input_init_server();
   esp_zb_zcl_rel_humidity_measurement_init_server();
@@ -539,6 +590,7 @@ static void tof_task(void *pv) {
  * ----------------------------- */
 
 void zb_start(void) {
+  pm_lock_hold_for_join();
   s_zb_events = xEventGroupCreate();
   pumps_gpio_init();
   xTaskCreate(zigbee_task, "zigbee_task", 8192, NULL, 5, NULL);

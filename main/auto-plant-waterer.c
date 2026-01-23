@@ -13,6 +13,7 @@
 static const char *TAG = "main";
 
 void app_main(void) {
+  enable_power_management();
   cfg_start();
   // wifi_start();
   zb_start();
