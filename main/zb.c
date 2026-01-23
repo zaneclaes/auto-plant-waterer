@@ -566,130 +566,98 @@ static void reboot_later(uint8_t arg){
   esp_restart();
 }
 
-void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s)
-{
-  uint32_t sig = 0;
-  if (signal_s && signal_s->p_app_signal) {
-    memcpy(&sig, signal_s->p_app_signal, sizeof(sig));
-  }
-  ESP_LOGW("zb", "SIG=%" PRIu32 " (0x%02" PRIx32 ") status=%s p=%p",
-           sig, sig, esp_err_to_name(signal_s ? signal_s->esp_err_status : ESP_FAIL),
-           signal_s ? signal_s->p_app_signal : NULL);
-}
+void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
+  /* esp-zigbee-lib 1.6.x pattern */
+  esp_zb_app_signal_msg_t *m =
+      (signal_s) ? (esp_zb_app_signal_msg_t *) signal_s->p_app_signal : NULL;
 
-// void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
-//   /* esp-zigbee-lib 1.6.x pattern */
-//   esp_zb_app_signal_msg_t *m =
-//       (signal_s) ? (esp_zb_app_signal_msg_t *) signal_s->p_app_signal : NULL;
-//
-//   esp_zb_app_signal_type_t sig =
-//       (m) ? m->signal : ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP;
-//
-//   esp_err_t status = signal_s ? signal_s->esp_err_status : ESP_FAIL;
-//
-//   switch (sig) {
-//     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-//       // In autostart mode this may not happen / should not drive commissioning
-//       // zb_start_bdb_init();
-//       if (status != ESP_OK) {
-//         ESP_LOGE(TAG, "Zigbee startup failed (SKIP_STARTUP, %s). Rebooting.",
-//                  esp_err_to_name(status));
-//         // Don’t try steering; reboot is the reliable recovery.
-//         esp_zb_scheduler_alarm(reboot_later, 0, 1000);
-//       } else {
-//         ESP_LOGI(TAG, "SKIP_STARTUP (ignored in autostart)");
-//       }
-//       break;
-//
-//     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-//     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
-//       if (status != ESP_OK) {
-//         // ESP_LOGW(TAG, "Device start/reboot failed (%s) -> retry steering soon",
-//         //          esp_err_to_name(status));
-//         // s_steering_in_progress = false;
-//         // esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 1500);
-//
-//         ESP_LOGE(TAG, "Device start/reboot failed (%s). Rebooting.", esp_err_to_name(status));
-//         esp_zb_scheduler_alarm(reboot_later, 0, 1000);
-//         break;
-//       }
-//
-//       if (esp_zb_bdb_is_factory_new()) {
-//         ESP_LOGI(TAG, "Factory new -> start steering");
-//         zb_start_steering();
-//       } else {
-//         ESP_LOGI(TAG, "Not factory new -> waiting for rejoin");
-//       }
-//       break;
-//
-//     case ESP_ZB_BDB_SIGNAL_STEERING:
-//       if (status == ESP_OK) {
-//         ESP_LOGI(TAG, "Steering reported OK; verifying join...");
-//         // Let the stack settle addresses; then verify real join state
-//         esp_zb_scheduler_alarm(verify_join_later, 0, 1000);
-//       } else {
-//         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
-//         esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
-//       }
-//       break;
-//     // case ESP_ZB_BDB_SIGNAL_STEERING:
-//     //     if (status == ESP_OK) {
-//     //         ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx)",
-//     //                  esp_zb_get_pan_id(), esp_zb_get_short_address());
-//     //         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
-//     //
-//     //         esp_zb_sleep_enable(true);
-//     //         esp_zb_set_rx_on_when_idle(false);
-//     //
-//     //         humidity_bind_to_coordinator();
-//     //         battery_bind_to_coordinator();
-//     //         start_release_timer_ms(120000);
-//     //     } else {
-//     //         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
-//     //         /* schedule retry (see wrapper in section 3) */
-//     //         esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
-//     //     }
-//     //     break;
-//
-//     case ESP_ZB_NLME_STATUS_INDICATION: {
-//       esp_zb_zdo_signal_nwk_status_indication_params_t *p =
-//           (esp_zb_zdo_signal_nwk_status_indication_params_t *) esp_zb_app_signal_get_params(signal_s->p_app_signal);
-//
-//       if (p) {
-//         ESP_LOGW(TAG, "NLME_STATUS_INDICATION: nwk_status=0x%02x network_addr=0x%04x unknown_cmd=0x%02x",
-//                  p->status, p->network_addr, p->unknown_command_id);
-//       } else {
-//         ESP_LOGW(TAG, "NLME_STATUS_INDICATION: (no params)");
-//       }
-//       break;
-//     }
-//
-//     case ESP_ZB_ZDO_SIGNAL_LEAVE:
-//       ESP_LOGW(TAG, "Left network");
-//       xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
-//       esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-//       break;
-//
-//     case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
-//       EventBits_t bits = xEventGroupGetBits(s_zb_events);
-//       if (bits & ZB_JOINED_BIT) {
-//         ESP_LOGI(TAG, "Zigbee sleeping...?");
-//         esp_zb_sleep_now();
-//       }
-//       break;
-//
-//     default:
-//       ESP_LOGI(TAG, "Zigbee sig: %d status: %s msg: %s",
-//                (int)sig, esp_err_to_name(status), (m && m->msg) ? m->msg : "(none)");
-//       ESP_LOGW(TAG, "p_app_signal=%p", signal_s ? signal_s->p_app_signal : NULL);
-//       if (signal_s && signal_s->p_app_signal) {
-//         uint8_t *b = (uint8_t *)signal_s->p_app_signal;
-//         ESP_LOGW(TAG, "p_app_signal bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
-//                  b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-//       }
-//       break;
-//   }
-// }
+  esp_zb_app_signal_type_t sig =
+      (m) ? m->signal : ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP;
+
+  esp_err_t status = signal_s ? signal_s->esp_err_status : ESP_FAIL;
+
+  switch (sig) {
+    case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
+      ESP_LOGI(TAG, "SKIP_STARTUP (BDB init)");
+      zb_start_bdb_init();
+      break;
+
+    case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
+    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
+      if (status != ESP_OK) {
+        ESP_LOGW(TAG, "Device start/reboot failed (%s) -> retry steering soon",
+                 esp_err_to_name(status));
+        s_steering_in_progress = false;
+        esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 1500);
+        break;
+      }
+
+      if (esp_zb_bdb_is_factory_new()) {
+        ESP_LOGI(TAG, "Factory new -> start steering");
+        zb_start_steering();
+      } else {
+        ESP_LOGI(TAG, "Not factory new -> waiting for rejoin");
+      }
+      break;
+
+    case ESP_ZB_BDB_SIGNAL_STEERING:
+        if (status == ESP_OK) {
+            ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx)",
+                     esp_zb_get_pan_id(), esp_zb_get_short_address());
+            xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
+
+            esp_zb_sleep_enable(true);
+            esp_zb_set_rx_on_when_idle(false);
+
+            humidity_bind_to_coordinator();
+            battery_bind_to_coordinator();
+            // start_release_timer_ms(120000);
+        } else {
+            ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
+            /* schedule retry (see wrapper in section 3) */
+            esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
+        }
+        break;
+
+    case ESP_ZB_NLME_STATUS_INDICATION: {
+      esp_zb_zdo_signal_nwk_status_indication_params_t *p =
+          (esp_zb_zdo_signal_nwk_status_indication_params_t *) esp_zb_app_signal_get_params(signal_s->p_app_signal);
+
+      if (p) {
+        ESP_LOGW(TAG, "NLME_STATUS_INDICATION: nwk_status=0x%02x network_addr=0x%04x unknown_cmd=0x%02x",
+                 p->status, p->network_addr, p->unknown_command_id);
+      } else {
+        ESP_LOGW(TAG, "NLME_STATUS_INDICATION: (no params)");
+      }
+      break;
+    }
+
+    case ESP_ZB_ZDO_SIGNAL_LEAVE:
+      ESP_LOGW(TAG, "Left network");
+      xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
+      esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+      break;
+
+    case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
+      EventBits_t bits = xEventGroupGetBits(s_zb_events);
+      if (bits & ZB_JOINED_BIT) {
+        ESP_LOGI(TAG, "Zigbee sleeping...?");
+        esp_zb_sleep_now();
+      }
+      break;
+
+    default:
+      ESP_LOGI(TAG, "Zigbee sig: %d status: %s msg: %s",
+               (int)sig, esp_err_to_name(status), (m && m->msg) ? m->msg : "(none)");
+      ESP_LOGW(TAG, "p_app_signal=%p", signal_s ? signal_s->p_app_signal : NULL);
+      if (signal_s && signal_s->p_app_signal) {
+        uint8_t *b = (uint8_t *)signal_s->p_app_signal;
+        ESP_LOGW(TAG, "p_app_signal bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
+                 b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+      }
+      break;
+  }
+}
 
 /* -----------------------------
  * Zigbee task
@@ -713,7 +681,7 @@ static void zigbee_task(void *pv) {
   };
 
   // esp_zb_nvram_erase_at_start(true); // erase NVRAM
-  pm_lock_hold_for_join();
+  // pm_lock_hold_for_join();
   // esp_zb_sleep_enable(false);
   // esp_zb_set_rx_on_when_idle(true);
 
@@ -732,40 +700,10 @@ static void zigbee_task(void *pv) {
   // zigbee_create_endpoints_and_register();
   // esp_zb_core_action_handler_register(zb_action_handler);
 
-  ESP_ERROR_CHECK(esp_zb_start(true));
+  ESP_ERROR_CHECK(esp_zb_start(false));
   esp_zb_stack_main_loop();
   vTaskDelete(NULL);
 }
-
-static void zigbee_task_min(void *pv)
-{
-  (void)pv;
-
-  esp_zb_platform_config_t platform_config = {
-    .radio_config = { .radio_mode = ZB_RADIO_MODE_NATIVE },
-    .host_config  = { .host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE },
-};
-  ESP_ERROR_CHECK(esp_zb_platform_config(&platform_config));
-
-  esp_zb_cfg_t zb_cfg = {
-    .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,
-    .install_code_policy = false,
-    .nwk_cfg.zed_cfg = {
-      .ed_timeout  = ESP_ZB_ED_AGING_TIMEOUT_1024MIN,
-      .keep_alive  = 3000,
-  },
-};
-
-  esp_zb_nvram_erase_at_start(true); // erase NVRAM
-  esp_zb_bdb_reset_via_local_action();
-
-  esp_zb_init(&zb_cfg);
-
-  // Use the same start mode as the example so we remove start(true/false) as a variable
-  esp_zb_start(false);
-  esp_zb_stack_main_loop();
-}
-
 
 /* -----------------------------
  * ToF task: update Zigbee attribute
@@ -829,7 +767,7 @@ static void battery_task(void *pv) {
 void zb_start(void) {
   ESP_ERROR_CHECK(nvs_flash_init());
   s_zb_events = xEventGroupCreate();
-  xTaskCreate(zigbee_task_min, "zigbee_task", 8192, NULL, 5, NULL);
+  xTaskCreate(zigbee_task, "zigbee_task", 8192, NULL, 5, NULL);
   // xTaskCreate(tof_task, "tof_task", 4096, NULL, 4, NULL);
   // xTaskCreate(battery_task, "battery_task", 4096, NULL, 4, NULL);
 }
