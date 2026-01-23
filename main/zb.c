@@ -2,8 +2,8 @@
 #include <inttypes.h>
 #include "zb.h"
 #include "cfg.h"
-#include "water_level.h"
-#include "water_pumps.h"
+#include "tof.h"
+#include "pumps.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,7 +24,7 @@
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
 
 /* TAG */
-static const char *TAG = "zb_pumps_tof";
+static const char *TAG = "zb";
 
 
 /* -----------------------------
@@ -59,13 +59,9 @@ static uint16_t s_water_level_pct_x100 = 0;   // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0;            // 0.00%
 static uint16_t s_rh_max_x100 = 10000;        // 100.00%
 
-static const gpio_num_t s_pump_gpios[3] = { PUMP1_GPIO, PUMP2_GPIO, PUMP3_GPIO };
-
 /* Forward decls */
 static void zigbee_task(void *pv);
 static void tof_task(void *pv);
-static void pumps_gpio_init(void);
-static void pump_set_by_endpoint(uint8_t endpoint, bool on);
 
 /* Minimal ToF read stub (replace with real driver) */
 static esp_err_t tof_init_i2c(void);
@@ -78,38 +74,15 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
  * GPIO / PUMPS
  * ----------------------------- */
 
-static void pumps_gpio_init(void)
-{
-    gpio_config_t cfg = {
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask =
-            (1ULL << PUMP1_GPIO) |
-            (1ULL << PUMP2_GPIO) |
-            (1ULL << PUMP3_GPIO),
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_ERROR_CHECK(gpio_config(&cfg));
+static uint8_t zb_get_pump_idx(uint8_t endpoint) {
+  if (endpoint == EP_PUMP1) return 0;
+  if (endpoint == EP_PUMP2) return 1;
+  if (endpoint == EP_PUMP3) return 2;
 
-    /* Default OFF */
-    gpio_set_level(PUMP1_GPIO, 0);
-    gpio_set_level(PUMP2_GPIO, 0);
-    gpio_set_level(PUMP3_GPIO, 0);
+  ESP_LOGW(TAG, "Pump endpoint %u is unknown; assuming idx 0", endpoint);
+  return 0;
 }
 
-static void pump_set_by_endpoint(uint8_t endpoint, bool on)
-{
-    int idx = -1;
-    if (endpoint == EP_PUMP1) idx = 0;
-    else if (endpoint == EP_PUMP2) idx = 1;
-    else if (endpoint == EP_PUMP3) idx = 2;
-
-    if (idx < 0) return;
-
-    gpio_set_level(s_pump_gpios[idx], on ? 1 : 0);
-    ESP_LOGI(TAG, "Pump endpoint %u -> %s (GPIO %d)", endpoint, on ? "ON" : "OFF", (int)s_pump_gpios[idx]);
-}
 
 /* -----------------------------
  * I2C / ToF (stub)
@@ -372,7 +345,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (m->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && m->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                 bool on = (*(bool *)m->attribute.data.value) ? true : false;
-                pump_set_by_endpoint(endpoint, on);
+              pump_set(zb_get_pump_idx(endpoint), on);
 
                 /* Keep ZCL attribute store consistent with physical state */
                 esp_zb_lock_acquire(portMAX_DELAY);
@@ -551,12 +524,6 @@ static void tof_task(void *pv)
 void zb_start(void)
 {
     s_zb_events = xEventGroupCreate();
-
-    pumps_gpio_init();
-
-    /* Start Zigbee stack task */
     xTaskCreate(zigbee_task, "zigbee_task", 8192, NULL, 5, NULL);
-
-    /* Start ToF task */
     xTaskCreate(tof_task, "tof_task", 4096, NULL, 4, NULL);
 }

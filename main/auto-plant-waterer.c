@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "tof.h"
+#include "pumps.h"
 #include "wifi.h"
 #include "zb.h"
 
@@ -13,6 +15,7 @@ static const char *TAG = "main";
 
 void app_main(void) {
   cfg_start();
+  pumps_start();
   // wifi_start();
   zb_start();
 }
