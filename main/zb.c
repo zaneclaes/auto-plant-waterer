@@ -34,6 +34,9 @@ static const char *TAG = "zb";
 #define COORDINATOR_SHORT_ADDR 0x0000
 #define COORDINATOR_ENDPOINT   1   // Z2M coordinator endpoint is typically 1
 
+#define MIN_REPORTING_SEC   360
+#define MAX_REPORTING_SEC   600
+
 /* Pump GPIOs (set to your pins) */
 
 /* I2C for ToF sensor (set to your pins) */
@@ -215,8 +218,8 @@ static void humidity_local_config_reporting(void) {
     .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
 
     // Pick sane defaults for a product:
-    .min_interval = 5, // no more often than every 5s
-    .max_interval = 60, // at least once a minute even if stable
+    .min_interval = MIN_REPORTING_SEC, // no more often than every 5s
+    .max_interval = MAX_REPORTING_SEC, // at least once a minute even if stable
     .reportable_change = &s_reportable_change, // 1.00% change
   };
 
@@ -227,7 +230,7 @@ static void humidity_local_config_reporting(void) {
   esp_zb_zcl_config_report_cmd_req(&report_cmd);
   esp_zb_lock_release();
 
-  ESP_LOGI(TAG, "Local reporting configured (min=5s max=60s change=1%%)");
+  ESP_LOGI(TAG, "Local reporting configured");
 }
 
 
@@ -521,8 +524,8 @@ static void zigbee_task(void *pv) {
     .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED, /* or ROUTER if you prefer */
     .install_code_policy = false,
     .nwk_cfg.zed_cfg = {
-      .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_64MIN,
-      .keep_alive = 3000,
+      .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_1024MIN,
+      .keep_alive = MIN_REPORTING_SEC * 1000,
     },
   };
 
@@ -581,7 +584,7 @@ static void tof_task(void *pv) {
       ESP_LOGI(TAG, "Water level: %u mm -> %d%%", (unsigned)mm, (int)pct);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    vTaskDelay(pdMS_TO_TICKS(MIN_REPORTING_SEC * 1000));
   }
 }
 
