@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bat.h"
 #include "cfg.h"
 #include "wifi.h"
 #include "zb.h"

@@ -427,6 +427,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
                  esp_zb_get_pan_id(), esp_zb_get_short_address());
         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
         humidity_bind_to_coordinator();
+
+        esp_zb_sleep_enable(true);
+        esp_zb_set_rx_on_when_idle(false);
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
         /* schedule retry (see wrapper in section 3) */
@@ -527,8 +530,7 @@ static void tof_task(void *pv) {
       ESP_LOGI(TAG, "Water level: %u mm -> %d%%", (unsigned)mm, (int)pct);
     }
 
-
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(30000));
   }
 }
 
