@@ -20,6 +20,7 @@ struct BatteryLevel {
 };
 
 void battery_start(void);
+void enable_power_management(void);
 const struct BatteryLevel* battery_update(void);
 
 #endif //AUTO_PLANT_WATERER_BAT_H

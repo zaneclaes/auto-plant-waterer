@@ -22,8 +22,8 @@ struct WaterLevel {
 };
 
 #define I2C_PORT      I2C_NUM_0
-#define I2C_SDA_GPIO  (GPIO_NUM_6) // SDA = GPIO6 (XIAO pin labeled SDA / D6)
-#define I2C_SCL_GPIO  (GPIO_NUM_7) // SCL = GPIO7 (XIAO pin labeled SCL / D7)
+#define I2C_SDA_GPIO  (GPIO_NUM_22) // SDA = GPIO22 (XIAO pin labeled SDA / D4)
+#define I2C_SCL_GPIO  (GPIO_NUM_23) // SCL = GPIO23 (XIAO pin labeled SCL / D5)
 #define I2C_FREQ_HZ   (400000)
 #define TOF_I2C_ADDR  (0x29)
 

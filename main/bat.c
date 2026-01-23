@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "esp_pm.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -41,6 +43,14 @@ void battery_start(void)
   }
 }
 
+void enable_power_management(void) {
+  esp_pm_config_t pm = {
+    .max_freq_mhz = 80,
+    .min_freq_mhz = 10,
+    .light_sleep_enable = true,
+  };
+  ESP_ERROR_CHECK(esp_pm_configure(&pm));
+}
 
 static float read_battery_voltage(void){
   int mv_sum = 0;
