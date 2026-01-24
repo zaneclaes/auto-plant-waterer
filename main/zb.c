@@ -3,7 +3,7 @@
 #include "zb.h"
 #include "cfg.h"
 #include "tof.h"
-#include "water_pumps.h"
+#include "pumps.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,7 +34,7 @@ static const char *TAG = "zb";
 #define COORDINATOR_SHORT_ADDR 0x0000
 #define COORDINATOR_ENDPOINT   1   // Z2M coordinator endpoint is typically 1
 
-#define MIN_REPORTING_SEC   60
+#define MIN_REPORTING_SEC   10
 #define MAX_REPORTING_SEC   600
 
 /* Pump GPIOs (set to your pins) */
@@ -63,18 +63,8 @@ static uint16_t s_water_level_pct_x100 = 0; // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0; // 0.00%
 static uint16_t s_rh_max_x100 = 10000; // 100.00%
 
-static const gpio_num_t s_pump_gpios[3] = {PUMP1_GPIO, PUMP2_GPIO, PUMP3_GPIO};
-
-/* Forward decls */
 static void zigbee_task(void *pv);
-
 static void tof_task(void *pv);
-
-static void pumps_gpio_init(void);
-
-static void pump_set_by_endpoint(uint8_t endpoint, bool on);
-
-/* Zigbee handlers */
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message);
 /* -----------------------------
  * LOCK; prevent power management while joining...
@@ -122,35 +112,13 @@ static void start_release_timer_ms(uint32_t ms) {
  * GPIO / PUMPS
  * ----------------------------- */
 
-static void pumps_gpio_init(void) {
-  gpio_config_t cfg = {
-    .mode = GPIO_MODE_OUTPUT,
-    .pin_bit_mask =
-    (1ULL << PUMP1_GPIO) |
-    (1ULL << PUMP2_GPIO) |
-    (1ULL << PUMP3_GPIO),
-    .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    .pull_up_en = GPIO_PULLUP_DISABLE,
-    .intr_type = GPIO_INTR_DISABLE,
-  };
-  ESP_ERROR_CHECK(gpio_config(&cfg));
+static uint8_t zb_get_pump_idx(uint8_t endpoint) {
+  if (endpoint == EP_PUMP1) return 0;
+  if (endpoint == EP_PUMP2) return 1;
+  if (endpoint == EP_PUMP3) return 2;
 
-  /* Default OFF */
-  gpio_set_level(PUMP1_GPIO, 0);
-  gpio_set_level(PUMP2_GPIO, 0);
-  gpio_set_level(PUMP3_GPIO, 0);
-}
-
-static void pump_set_by_endpoint(uint8_t endpoint, bool on) {
-  int idx = -1;
-  if (endpoint == EP_PUMP1) idx = 0;
-  else if (endpoint == EP_PUMP2) idx = 1;
-  else if (endpoint == EP_PUMP3) idx = 2;
-
-  if (idx < 0) return;
-
-  gpio_set_level(s_pump_gpios[idx], on ? 1 : 0);
-  ESP_LOGI(TAG, "Pump endpoint %u -> %s (GPIO %d)", endpoint, on ? "ON" : "OFF", (int)s_pump_gpios[idx]);
+  ESP_LOGW(TAG, "Pump endpoint %u is unknown; assuming idx 0", endpoint);
+  return 0;
 }
 
 /* -----------------------------
@@ -377,7 +345,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         if (m->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && m->attribute.data.type ==
             ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
           bool on = (*(bool *) m->attribute.data.value) ? true : false;
-          pump_set_by_endpoint(endpoint, on);
+          pump_set(zb_get_pump_idx(endpoint), on);
 
           /* Keep ZCL attribute store consistent with physical state */
           esp_zb_lock_acquire(portMAX_DELAY);
@@ -439,6 +407,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
                  esp_zb_get_pan_id(), esp_zb_get_short_address());
         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
         humidity_bind_to_coordinator();
+        // pumps_start();
         start_release_timer_ms(120000);
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
@@ -568,9 +537,10 @@ static void tof_task(void *pv) {
  * ----------------------------- */
 
 void zb_start(void) {
+  vTaskDelay(pdMS_TO_TICKS(500));   // unknown race condition... required for steering.
+
   pm_lock_hold_for_join();
   s_zb_events = xEventGroupCreate();
-  pumps_gpio_init();
   xTaskCreate(zigbee_task, "zigbee_task", 8192, NULL, 5, NULL);
   xTaskCreate(tof_task, "tof_task", 4096, NULL, 4, NULL);
 }
