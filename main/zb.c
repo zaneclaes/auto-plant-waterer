@@ -2,7 +2,7 @@
 #include <inttypes.h>
 #include "zb.h"
 #include "cfg.h"
-#include "water_level.h"
+#include "tof.h"
 #include "water_pumps.h"
 
 #include "freertos/FreeRTOS.h"
@@ -34,7 +34,7 @@ static const char *TAG = "zb";
 #define COORDINATOR_SHORT_ADDR 0x0000
 #define COORDINATOR_ENDPOINT   1   // Z2M coordinator endpoint is typically 1
 
-#define MIN_REPORTING_SEC   360
+#define MIN_REPORTING_SEC   60
 #define MAX_REPORTING_SEC   600
 
 /* Pump GPIOs (set to your pins) */
@@ -73,11 +73,6 @@ static void tof_task(void *pv);
 static void pumps_gpio_init(void);
 
 static void pump_set_by_endpoint(uint8_t endpoint, bool on);
-
-/* Minimal ToF read stub (replace with real driver) */
-static esp_err_t tof_init_i2c(void);
-
-static esp_err_t tof_read_distance_mm(uint16_t *out_mm);
 
 /* Zigbee handlers */
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message);
@@ -231,35 +226,6 @@ static void humidity_local_config_reporting(void) {
   esp_zb_lock_release();
 
   ESP_LOGI(TAG, "Local reporting configured");
-}
-
-
-static esp_err_t tof_init_i2c(void) {
-  i2c_config_t conf = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = I2C_SDA_GPIO,
-    .scl_io_num = I2C_SCL_GPIO,
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = I2C_FREQ_HZ,
-  };
-  ESP_RETURN_ON_ERROR(i2c_param_config(I2C_PORT, &conf), TAG, "i2c_param_config failed");
-  ESP_RETURN_ON_ERROR(i2c_driver_install(I2C_PORT, conf.mode, 0, 0, 0), TAG, "i2c_driver_install failed");
-
-  /* TODO: initialize your ToF chip here (VL53L0X/VL53L1X/etc) */
-  return ESP_OK;
-}
-
-static esp_err_t tof_read_distance_mm(uint16_t *out_mm) {
-  if (!out_mm) return ESP_ERR_INVALID_ARG;
-
-  /* TODO: replace with real sensor read
-     This stub just returns a slowly changing fake value. */
-  static uint16_t fake = 200;
-  fake += 6;
-  if (fake > 700) fake = 200;
-  *out_mm = fake;
-  return ESP_OK;
 }
 
 /* -----------------------------
@@ -548,46 +514,55 @@ static void zigbee_task(void *pv) {
  * ----------------------------- */
 
 static void tof_task(void *pv) {
-  ESP_ERROR_CHECK(tof_init_i2c());
-
   /* Wait until joined before reporting/updating attributes */
   xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
   while (true) {
-    uint16_t mm = 0;
-    if (tof_read_distance_mm(&mm) == ESP_OK) {
-      /* Clamp */
-      uint16_t mm_clamped = mm;
-      if (mm_clamped < WATER_LEVEL_MIN_MM) mm_clamped = WATER_LEVEL_MIN_MM;
-      if (mm_clamped > WATER_LEVEL_MAX_MM) mm_clamped = WATER_LEVEL_MAX_MM;
+    const struct WaterLevel* wl = tof_update();
+    s_water_level_pct_x100 = (uint16_t) wl->percent * 100; // convert to 100ths
 
-      /* Map distance->percent (smaller distance = more full) */
-      uint32_t range = (uint32_t) (WATER_LEVEL_MAX_MM - WATER_LEVEL_MIN_MM);
-      uint32_t from_min = (uint32_t) (mm_clamped - WATER_LEVEL_MIN_MM);
-
-      /* percent_full = 100 * (1 - from_min/range) */
-      uint32_t pct = (range == 0) ? 0 : (100U * (range - from_min) + (range / 2)) / range; // rounded
-      if (pct > 100U) pct = 100U;
-      s_water_level_pct_x100 = (uint16_t) pct * 100;
-
-      esp_zb_lock_acquire(portMAX_DELAY);
-      esp_zb_zcl_set_attribute_val(
-        EP_WATER,
-        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-        &s_water_level_pct_x100,
-        false
-      );
-      esp_zb_lock_release();
-
-      ESP_LOGI(TAG, "Water level: %u mm -> %d%%", (unsigned)mm, (int)pct);
-    }
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(
+      EP_WATER,
+      ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+      ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+      &s_water_level_pct_x100,
+      false
+    );
+    esp_zb_lock_release();
 
     vTaskDelay(pdMS_TO_TICKS(MIN_REPORTING_SEC * 1000));
   }
 }
 
+// static void water_attr_update_cb(uint8_t param)
+// {
+//   (void)param;
+//
+//   // dummy value
+//   static uint16_t pct_x100 = 5000; // 50.00%
+//   pct_x100 += 100;                // +1%
+//   if (pct_x100 > 10000) pct_x100 = 0;
+//
+//   ESP_LOGI(TAG, "Water attribute update called %d%%", pct_x100);
+//
+//   s_water_level_pct_x100 = pct_x100;
+//
+//   esp_zb_lock_acquire(portMAX_DELAY);
+//   esp_zb_zcl_set_attribute_val(
+//       EP_WATER,
+//       ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+//       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+//       ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+//       &s_water_level_pct_x100,
+//       false
+//   );
+//   esp_zb_lock_release();
+//
+//   // schedule next update (e.g., 5 minutes)
+//   esp_zb_scheduler_alarm(water_attr_update_cb, 0, MIN_REPORTING_SEC * 1000);
+// }
 /* -----------------------------
  * app_main
  * ----------------------------- */

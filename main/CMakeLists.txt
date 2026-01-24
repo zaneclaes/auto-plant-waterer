@@ -16,4 +16,5 @@ idf_component_register(
         esp_http_server
         esp-zigbee-lib
         esp-zboss-lib
+        ESP32_VL53L0X
 )
