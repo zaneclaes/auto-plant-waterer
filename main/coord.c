@@ -7,18 +7,36 @@
 #include "esp_log.h"
 #include "pumps.h"
 #include "soil.h"
+#include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
+#include "soc/gpio_num.h"
 
 static const char *TAG = "coord";
+
+#define PIN_LED     GPIO_NUM_15
 
 static adc_oneshot_unit_handle_t adc_handle;
 
 void shared_start() {
+  gpio_config_t cfg = {
+    .pin_bit_mask = 1ULL << PIN_LED,
+    .mode = GPIO_MODE_OUTPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+  };
+  ESP_ERROR_CHECK(gpio_config(&cfg));
+  set_led(true);
+
   adc_oneshot_unit_init_cfg_t init_cfg = {
     .unit_id = SHARED_ADC_UNIT,
     .ulp_mode = ADC_ULP_MODE_DISABLE,
   };
   ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+}
+
+void set_led(bool on) {
+  gpio_set_level(PIN_LED, on ? 0 : 1);
 }
 
 adc_channel_t adc_start(int pin) {
@@ -40,6 +58,5 @@ esp_err_t adc_shared_read(const adc_channel_t ch, int* raw) {
 }
 
 void on_joined() {
-  pumps_start();
-  soil_start();
+  set_led(false);
 }

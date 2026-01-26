@@ -21,11 +21,13 @@
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 // #include "zcl/esp_zigbee_zcl_analog_input.h"
+#include "bat.h"
 #include "coord.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
 #include "soil.h"
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
+#include "zcl/esp_zigbee_zcl_power_config.h"
 
 static const char *TAG = "zb";
 
@@ -37,6 +39,8 @@ static const char *TAG = "zb";
 
 #define MIN_REPORTING_SEC   10
 #define MAX_REPORTING_SEC   600
+
+#define BAT_REPORTING_SEC   60 * 30
 
 #define EP_WATER      0x01
 #define EP_SOIL1      0x02
@@ -59,6 +63,9 @@ static uint16_t s_rh_min_x100 = 0; // 0.00%
 static uint16_t s_rh_max_x100 = 10000; // 100.00%
 
 static uint16_t s_soil_level_pct_x100[3] = { 0, 0, 0 };
+
+static uint8_t s_battery_voltage = 0;
+static uint8_t s_battery_percent = 0;
 
 static void zigbee_task(void *pv);
 static void report_task(void *pv);
@@ -108,6 +115,12 @@ static void start_release_timer_ms(uint32_t ms) {
  * Helpers
  * ----------------------------- */
 
+static void zb_update_battery(void) {
+  const struct BatteryLevel* bat = battery_update();
+  s_battery_percent = bat->percent * 2;
+  s_battery_voltage = (uint8_t)(bat->voltage * 10.0f);
+}
+
 static uint8_t get_soil_level_endpoint(uint8_t idx) {
   if (idx == 0 && NUM_ZONES >= 1) return EP_SOIL1;
   if (idx == 1 && NUM_ZONES >= 2) return EP_SOIL2;
@@ -129,6 +142,8 @@ static uint8_t get_soil_level_idx(uint8_t ep) {
  * ----------------------------- */
 
 static uint16_t s_immediate_water_level_change_report = 1000; // if any water/soil level changes more than 10%, report immediately
+static uint8_t battery_pct_reportable_change = 2; // 1% (0.5% units)
+static uint8_t battery_v_reportable_change   = 1; // 0.1V (100mV units)
 
 static void water_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
   esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *) user_ctx;
@@ -240,11 +255,76 @@ static void soil_level_bind_to_coordinator(uint8_t idx) {
   esp_zb_zdo_device_bind_req(bind_req, soil_level_bind_cb, bind_req);
 }
 
+static void bind_battery_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx){
+  esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *)user_ctx;
+
+  if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+    ESP_LOGI(TAG, "Bind OK: battery reports from ep %d to coordinator ep %d",
+             bind_req->src_endp, bind_req->dst_endp);
+
+    esp_zb_zcl_config_report_cmd_t cmd = {0};
+
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address();
+    cmd.zcl_basic_cmd.src_endpoint = bind_req->src_endp;
+    cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
+    cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+
+    esp_zb_zcl_config_report_record_t recs[2] = {
+      {
+        .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+        .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+        .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+        .min_interval = BAT_REPORTING_SEC,
+        .max_interval = 60 * 60,
+        .reportable_change = &battery_pct_reportable_change,
+    },
+    {
+      .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+      .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+      .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
+      .min_interval = BAT_REPORTING_SEC,
+      .max_interval = 60 * 60,
+      .reportable_change = &battery_v_reportable_change,
+  }
+    };
+
+    cmd.record_number = 2;
+    cmd.record_field  = recs;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_config_report_cmd_req(&cmd);
+    esp_zb_lock_release();
+  } else {
+    ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
+  }
+
+  free(bind_req);
+}
+
+static void battery_bind_to_coordinator() {
+  esp_zb_zdo_bind_req_param_t *bind_req =
+      calloc(1, sizeof(esp_zb_zdo_bind_req_param_t));
+
+  bind_req->req_dst_addr = esp_zb_get_short_address(); // local device
+  bind_req->src_endp     = EP_WATER;
+  bind_req->dst_endp     = 1; // coordinator endpoint
+  bind_req->cluster_id   = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+  bind_req->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+
+  esp_zb_get_long_address(bind_req->src_address);
+  esp_zb_ieee_address_by_short(0x0000, bind_req->dst_address_u.addr_long);
+
+  esp_zb_zdo_device_bind_req(bind_req, bind_battery_cb, bind_req);
+}
+
 static void on_zb_joined() {
   water_level_bind_to_coordinator();
+  battery_bind_to_coordinator();
   for (uint8_t i = 0; i < NUM_ZONES; i++) {
     soil_level_bind_to_coordinator(i);
   }
+  on_joined();
   start_release_timer_ms(120000);
 }
 
@@ -305,6 +385,30 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
   );
 
   esp_zb_cluster_list_add_humidity_meas_cluster(cluster_list, rh, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+  if (ep == EP_WATER) {
+    zb_update_battery();
+    esp_zb_attribute_list_t *pwr =
+      esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+
+    esp_zb_custom_cluster_add_custom_attr(
+        pwr,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+        ESP_ZB_ZCL_ATTR_TYPE_U8,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &s_battery_voltage
+    );
+
+    esp_zb_custom_cluster_add_custom_attr(
+        pwr,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+        ESP_ZB_ZCL_ATTR_TYPE_U8,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &s_battery_percent
+    );
+
+    esp_zb_cluster_list_add_power_config_cluster(cluster_list, pwr, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+  }
 
   return cluster_list;
 }
@@ -484,33 +588,35 @@ static void report_task(void *pv) {
   }
 }
 
-// static void water_attr_update_cb(uint8_t param)
-// {
-//   (void)param;
-//
-//   // dummy value
-//   static uint16_t pct_x100 = 5000; // 50.00%
-//   pct_x100 += 100;                // +1%
-//   if (pct_x100 > 10000) pct_x100 = 0;
-//
-//   ESP_LOGI(TAG, "Water attribute update called %d%%", pct_x100);
-//
-//   s_water_level_pct_x100 = pct_x100;
-//
-//   esp_zb_lock_acquire(portMAX_DELAY);
-//   esp_zb_zcl_set_attribute_val(
-//       EP_WATER,
-//       ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
-//       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-//       ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-//       &s_water_level_pct_x100,
-//       false
-//   );
-//   esp_zb_lock_release();
-//
-//   // schedule next update (e.g., 5 minutes)
-//   esp_zb_scheduler_alarm(water_attr_update_cb, 0, MIN_REPORTING_SEC * 1000);
-// }
+static void battery_task(void* pv){
+  xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+  while (true) {
+    zb_update_battery();
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(
+        EP_WATER,
+        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+        &s_battery_voltage,
+        false
+        );
+    esp_zb_zcl_set_attribute_val(
+        EP_WATER,
+        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+        &s_battery_percent,
+        false
+    );
+    esp_zb_lock_release();
+
+    vTaskDelay(pdMS_TO_TICKS(BAT_REPORTING_SEC * 1000));
+  }
+}
+
 /* -----------------------------
  * app_main
  * ----------------------------- */
@@ -522,4 +628,5 @@ void zb_start(void) {
   s_zb_events = xEventGroupCreate();
   xTaskCreate(zigbee_task, "zigbee_task", 0x2000, NULL, 5, NULL);
   xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
+  xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
 }

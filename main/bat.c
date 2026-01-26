@@ -4,12 +4,15 @@
 #include <stdint.h>
 
 #include "coord.h"
+#include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
 #include "driver/gpio.h"
+
+static const char *TAG = "bat";
 
 static adc_cali_handle_t adc_cali_handle = NULL;
 static adc_channel_t adc_channel = ADC_CHANNEL_0;
@@ -68,5 +71,6 @@ static uint8_t battery_pct_from_voltage(float v) {
 const struct BatteryLevel* battery_update(void) {
   battery_level.voltage = read_battery_voltage();
   battery_level.percent = battery_pct_from_voltage(battery_level.voltage);
+  ESP_LOGI(TAG, "Bat %d%% (%fv)", battery_level.percent, battery_level.voltage);
   return &battery_level;
 }
