@@ -24,6 +24,7 @@
 #include "coord.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
+#include "soil.h"
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
 
 static const char *TAG = "zb";
@@ -56,6 +57,8 @@ static EventGroupHandle_t s_zb_events;
 static uint16_t s_water_level_pct_x100 = 0; // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0; // 0.00%
 static uint16_t s_rh_max_x100 = 10000; // 100.00%
+
+static uint16_t s_soil_level_pct_x100[3] = { 0, 0, 0 };
 
 static void zigbee_task(void *pv);
 static void report_task(void *pv);
@@ -102,22 +105,64 @@ static void start_release_timer_ms(uint32_t ms) {
 }
 
 /* -----------------------------
+ * Helpers
+ * ----------------------------- */
+
+static uint8_t get_soil_level_endpoint(uint8_t idx) {
+  if (idx == 0 && NUM_ZONES >= 1) return EP_SOIL1;
+  if (idx == 1 && NUM_ZONES >= 2) return EP_SOIL2;
+  if (idx == 2 && NUM_ZONES >= 3) return EP_SOIL3;
+  ESP_LOGW(TAG, "Soil level index #%u invalid (%u zones)", idx, NUM_ZONES);
+  return EP_SOIL1;
+}
+
+static uint8_t get_soil_level_idx(uint8_t ep) {
+  if (ep == EP_SOIL1) return 0;
+  if (ep == EP_SOIL2) return 1;
+  if (ep == EP_SOIL3) return 2;
+  ESP_LOGW(TAG, "Soil level endpoint %u invalid (%u zones)", ep, NUM_ZONES);
+  return 0;
+}
+
+/* -----------------------------
  * I2C / ToF (stub)
  * ----------------------------- */
 
-/* Reporting thresholds */
-static uint16_t s_reportable_change = 100; // 1.00% (units are 0.01%)
-static void humidity_local_config_reporting(void);
+static uint16_t s_immediate_water_level_change_report = 1000; // if any water/soil level changes more than 10%, report immediately
 
-static void bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
+static void water_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
   esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *) user_ctx;
 
   if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
     ESP_LOGI(TAG, "Bind OK: humidity reports from ep %d to coordinator ep %d",
              bind_req->src_endp, bind_req->dst_endp);
 
-    // Once bound, configure local reporting rules for MeasuredValue
-    humidity_local_config_reporting();
+    esp_zb_zcl_config_report_cmd_t report_cmd = {0};
+
+    report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(); // local config
+    report_cmd.zcl_basic_cmd.src_endpoint = bind_req->src_endp;
+    report_cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
+    report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+
+    report_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
+
+    esp_zb_zcl_config_report_record_t rec = {
+      .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+      .attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+      .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
+      .min_interval = MIN_REPORTING_SEC,
+      .max_interval = MAX_REPORTING_SEC,
+      .reportable_change = &s_immediate_water_level_change_report,
+    };
+
+    report_cmd.record_number = 1;
+    report_cmd.record_field = &rec;
+
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_config_report_cmd_req(&report_cmd);
+    esp_zb_lock_release();
+
+    ESP_LOGI(TAG, "Water level reporting configured");
   } else {
     ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
   }
@@ -125,90 +170,123 @@ static void bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
   free(bind_req);
 }
 
-static void humidity_bind_to_coordinator(void) {
+static void water_level_bind_to_coordinator(void) {
   esp_zb_zdo_bind_req_param_t *bind_req =
       (esp_zb_zdo_bind_req_param_t *) calloc(1, sizeof(esp_zb_zdo_bind_req_param_t));
 
-  bind_req->req_dst_addr = esp_zb_get_short_address(); // local device
-  bind_req->src_endp = EP_WATER; // <-- your sensor endpoint
+  bind_req->req_dst_addr = esp_zb_get_short_address();
+  bind_req->src_endp = EP_WATER;
   bind_req->dst_endp = COORDINATOR_ENDPOINT;
   bind_req->cluster_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
-
   bind_req->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
 
-  // Destination IEEE = coordinator IEEE (looked up by short)
   esp_zb_ieee_address_by_short(COORDINATOR_SHORT_ADDR, bind_req->dst_address_u.addr_long);
-
-  // Source IEEE = our IEEE
   esp_zb_get_long_address(bind_req->src_address);
-
-  esp_zb_zdo_device_bind_req(bind_req, bind_cb, bind_req);
+  esp_zb_zdo_device_bind_req(bind_req, water_level_bind_cb, bind_req);
 }
 
-static void humidity_local_config_reporting(void) {
-  esp_zb_zcl_config_report_cmd_t report_cmd = {0};
+static void soil_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
+  esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *) user_ctx;
 
-  report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(); // local config
-  report_cmd.zcl_basic_cmd.src_endpoint = EP_WATER;
-  report_cmd.zcl_basic_cmd.dst_endpoint = EP_WATER;
-  report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+  if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
+    ESP_LOGI(TAG, "Bind OK: humidity reports from ep %d to coordinator ep %d",
+             bind_req->src_endp, bind_req->dst_endp);
 
-  report_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
+    esp_zb_zcl_config_report_cmd_t report_cmd = {0};
 
-  esp_zb_zcl_config_report_record_t rec = {
-    .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
-    .attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-    .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
+    report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address();
+    report_cmd.zcl_basic_cmd.src_endpoint = bind_req->src_endp;
+    report_cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
+    report_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
 
-    // Pick sane defaults for a product:
-    .min_interval = MIN_REPORTING_SEC, // no more often than every 5s
-    .max_interval = MAX_REPORTING_SEC, // at least once a minute even if stable
-    .reportable_change = &s_reportable_change, // 1.00% change
-  };
+    report_cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
 
-  report_cmd.record_number = 1;
-  report_cmd.record_field = &rec;
+    esp_zb_zcl_config_report_record_t rec = {
+      .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
+      .attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+      .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
+      .min_interval = MIN_REPORTING_SEC,
+      .max_interval = MAX_REPORTING_SEC,
+      .reportable_change = &s_immediate_water_level_change_report,
+    };
 
-  esp_zb_lock_acquire(portMAX_DELAY);
-  esp_zb_zcl_config_report_cmd_req(&report_cmd);
-  esp_zb_lock_release();
+    report_cmd.record_number = 1;
+    report_cmd.record_field = &rec;
 
-  ESP_LOGI(TAG, "Local reporting configured");
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_config_report_cmd_req(&report_cmd);
+    esp_zb_lock_release();
+
+    ESP_LOGI(TAG, "Soil level reporting configured");
+  } else {
+    ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
+  }
+
+  free(bind_req);
+}
+
+static void soil_level_bind_to_coordinator(uint8_t idx) {
+  esp_zb_zdo_bind_req_param_t *bind_req =
+      (esp_zb_zdo_bind_req_param_t *) calloc(1, sizeof(esp_zb_zdo_bind_req_param_t));
+
+  bind_req->req_dst_addr = esp_zb_get_short_address();
+  bind_req->src_endp = get_soil_level_endpoint(idx);
+  bind_req->dst_endp = COORDINATOR_ENDPOINT;
+  bind_req->cluster_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
+  bind_req->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+
+  esp_zb_ieee_address_by_short(COORDINATOR_SHORT_ADDR, bind_req->dst_address_u.addr_long);
+  esp_zb_get_long_address(bind_req->src_address);
+  esp_zb_zdo_device_bind_req(bind_req, soil_level_bind_cb, bind_req);
+}
+
+static void on_zb_joined() {
+  water_level_bind_to_coordinator();
+  for (uint8_t i = 0; i < NUM_ZONES; i++) {
+    soil_level_bind_to_coordinator(i);
+  }
+  start_release_timer_ms(120000);
 }
 
 /* -----------------------------
  * Zigbee: device model creation
  * ----------------------------- */
 
-static esp_zb_cluster_list_t *create_water_level_clusters(void) {
+static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
   esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
 
-  /* Basic cluster */
-  esp_zb_basic_cluster_cfg_t basic_cfg = {0};
-  esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
-  esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *) ZB_MANUFACTURER_NAME);
-  esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *) ZB_MODEL_IDENTIFIER);
-  esp_zb_cluster_list_add_basic_cluster(cluster_list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+  if (ep == EP_WATER) {
+    esp_zb_basic_cluster_cfg_t basic_cfg = {0};
+    esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *) ZB_MANUFACTURER_NAME);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *) ZB_MODEL_IDENTIFIER);
+    esp_zb_cluster_list_add_basic_cluster(cluster_list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+  }
 
-  /* Identify cluster */
   esp_zb_identify_cluster_cfg_t identify_cfg = {0};
   esp_zb_attribute_list_t *identify = esp_zb_identify_cluster_create(&identify_cfg);
   esp_zb_cluster_list_add_identify_cluster(cluster_list, identify, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
-  /* ---- Analog Input cluster (0x000C) ----
-     IMPORTANT: Build a *standard* Analog Input cluster attribute list, then add it
-     using the SDK's Analog Input cluster adder (NOT "custom cluster").
-  */
   esp_zb_attribute_list_t *rh =
       esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT);
 
-  esp_zb_custom_cluster_add_custom_attr(
-    rh,
-    ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-    ESP_ZB_ZCL_ATTR_TYPE_U16,
-    ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-    &s_water_level_pct_x100
-  );
+  if (ep == EP_WATER) {
+    esp_zb_custom_cluster_add_custom_attr(
+      rh,
+      ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+      ESP_ZB_ZCL_ATTR_TYPE_U16,
+      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+      &s_water_level_pct_x100
+    );
+  } else {
+    esp_zb_custom_cluster_add_custom_attr(
+      rh,
+      ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+      ESP_ZB_ZCL_ATTR_TYPE_U16,
+      ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+      &s_soil_level_pct_x100[get_soil_level_idx(ep)]
+    );
+  }
 
   esp_zb_custom_cluster_add_custom_attr(
     rh,
@@ -226,7 +304,6 @@ static esp_zb_cluster_list_t *create_water_level_clusters(void) {
     &s_rh_max_x100
   );
 
-  /* Add as a STANDARD humidity cluster */
   esp_zb_cluster_list_add_humidity_meas_cluster(cluster_list, rh, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
   return cluster_list;
@@ -269,8 +346,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
         ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx)",
                  esp_zb_get_pan_id(), esp_zb_get_short_address());
         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
-        humidity_bind_to_coordinator();
-        start_release_timer_ms(120000);
+        on_zb_joined();
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
         /* schedule retry (see wrapper in section 3) */
@@ -339,8 +415,20 @@ static void zigbee_task(void *pv) {
       .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
       .app_device_version = 0,
     };
-    esp_zb_cluster_list_t *clusters = create_water_level_clusters();
+    esp_zb_cluster_list_t *clusters = create_water_level_clusters(EP_WATER);
     esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
+  }
+
+  for (uint8_t i = 0; i < NUM_ZONES; i++) {
+    uint8_t ep = get_soil_level_endpoint(i);
+    esp_zb_endpoint_config_t sl_cfg = {
+      .endpoint = ep,
+      .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+      .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+      .app_device_version = 0,
+    };
+    esp_zb_cluster_list_t *clusters = create_water_level_clusters(ep);
+    esp_zb_ep_list_add_ep(ep_list, clusters, sl_cfg);
   }
 
   esp_zb_device_register(ep_list);
@@ -360,9 +448,15 @@ static void report_task(void *pv) {
   xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
   while (true) {
+    // Update all values into local memory first
     const struct WaterLevel* wl = tof_update();
-    s_water_level_pct_x100 = (uint16_t) wl->percent * 100; // convert to 100ths
+    s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
+    for (uint8_t i = 0; i < NUM_ZONES; i++) {
+      const struct SoilLevel* sl = soil_get_level(i);
+      s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
+    }
 
+    // Lock once and send all updates to Zigbee
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(
       EP_WATER,
@@ -372,6 +466,16 @@ static void report_task(void *pv) {
       &s_water_level_pct_x100,
       false
     );
+    for (uint8_t i = 0; i < NUM_ZONES; i++) {
+      esp_zb_zcl_set_attribute_val(
+        get_soil_level_endpoint(i),
+        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+        &s_soil_level_pct_x100[i],
+        false
+      );
+    }
     esp_zb_lock_release();
 
     vTaskDelay(pdMS_TO_TICKS(MIN_REPORTING_SEC * 1000));
