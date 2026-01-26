@@ -4,6 +4,7 @@
 
 #include "bat.h"
 #include "cfg.h"
+#include "coord.h"
 #include "pumps.h"
 #include "soil.h"
 #include "tof.h"
@@ -15,7 +16,9 @@ static const char *TAG = "main";
 void app_main(void) {
   ESP_LOGI(TAG, "Starting %d zones...", NUM_ZONES);
   // enable_power_management();
+  shared_start();
   cfg_start();
+  battery_start();
   tof_start();
   pumps_start();
   soil_start();

@@ -451,10 +451,12 @@ static void report_task(void *pv) {
     // Update all values into local memory first
     const struct WaterLevel* wl = tof_update();
     s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
+    soil_enable();
     for (uint8_t i = 0; i < NUM_ZONES; i++) {
       const struct SoilLevel* sl = soil_get_level(i);
       s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
     }
+    soil_disable();
 
     // Lock once and send all updates to Zigbee
     esp_zb_lock_acquire(portMAX_DELAY);

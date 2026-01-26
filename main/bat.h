@@ -6,6 +6,8 @@
 #define VOLTAGE_MIN 3.3f
 #define VOLTAGE_MAX 4.2f
 
+#define PIN_BAT             (GPIO_NUM_5) // MTDI (on back)
+
 #define VBAT_R1 100000.0f // resistor 1 = 100 kOhm
 #define VBAT_R2 100000.0f // resistor 2 = 100 kOhm
 #define VBAT_DIVIDER_RATIO ((VBAT_R1 + VBAT_R2) / VBAT_R2)

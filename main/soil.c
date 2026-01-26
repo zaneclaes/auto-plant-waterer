@@ -4,6 +4,7 @@
 
 #include "soil.h"
 #include "cfg.h"
+#include "coord.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,7 +20,7 @@ static const char *TAG = "soil";
 
 // Configure 3 ADC channels (derived from GPIO)
 const gpio_num_t gpios[3] = { PIN_SOIL1, PIN_SOIL2, PIN_SOIL3 };
-const adc_channel_t adcs[3] = { ADC_SOIL1, ADC_SOIL2, ADC_SOIL3 };
+static adc_channel_t adcs[3] = { };
 
 struct SoilLevel levels[3] = {
   {
@@ -43,11 +44,8 @@ struct SoilLevel levels[3] = {
 static int g_dry_mv = 2800;   // reading in air / dry soil (mV)
 static int g_wet_mv = 1400;   // reading in water / saturated soil (mV)
 
-static adc_oneshot_unit_handle_t adc_handle;
 static adc_cali_handle_t cali_handle;
 static bool cali_enabled = false;
-
-#define SOIL_ADC_UNIT      ADC_UNIT_1
 
 void soil_start(void) {
   // Power gate pin (D3)
@@ -59,36 +57,18 @@ void soil_start(void) {
     .intr_type = GPIO_INTR_DISABLE,
   };
   ESP_ERROR_CHECK(gpio_config(&pwr));
-  gpio_set_level(PIN_SOIL_ON, 0); // start OFF
-
-  // ADC unit
-  adc_oneshot_unit_init_cfg_t init_cfg = {
-    .unit_id = ADC_UNIT_1,
-    .ulp_mode = ADC_ULP_MODE_DISABLE,
-  };
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+  gpio_set_level(PIN_SOIL_ON, 0);
 
   for (int i = 0; i < NUM_ZONES; i++) {
-    adc_unit_t unit;
-    adc_channel_t ch;
-    ESP_ERROR_CHECK(adc_oneshot_io_to_channel(gpios[i], &unit, &ch));
-    // Sanity: should all be ADC_UNIT_1 on XIAO C6 for GPIO0/1/2
-    if (unit != ADC_UNIT_1) ESP_LOGW(TAG, "GPIO%d mapped to unexpected ADC unit %d", (int)gpios[i], (int)unit);
-
-    adc_oneshot_chan_cfg_t cfg = {
-      .atten = ADC_ATTEN_DB_12, // widest range; good for 0-3.3V-ish sensors
-      .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ch, &cfg));
-
-    ESP_LOGI(TAG, "Soil %d: GPIO%d -> ADC_UNIT_%d CH_%d", i, (int)gpios[i], (int)unit, (int)ch);
+    adcs[i] = adc_start(gpios[i]);
+    ESP_LOGI(TAG, "Soil %d: GPIO%d -> CH_%d", i, (int)gpios[i], (int)adcs[i]);
   }
 
   // ---- Optional calibration (recommended) ----
   // Not all chips / configs support all schemes; we try line fitting first.
 #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
   adc_cali_line_fitting_config_t cali_cfg = {
-    .unit_id = SOIL_ADC_UNIT,
+    .unit_id = SHARED_ADC_UNIT,
     .atten = ADC_ATTEN_DB_11,
     .bitwidth = ADC_BITWIDTH_DEFAULT,
 };
@@ -100,7 +80,7 @@ void soil_start(void) {
   }
 #elif ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
   adc_cali_curve_fitting_config_t cali_cfg = {
-    .unit_id = SOIL_ADC_UNIT,
+    .unit_id = SHARED_ADC_UNIT,
     .atten = ADC_ATTEN_DB_12,
     .bitwidth = ADC_BITWIDTH_DEFAULT,
 };
@@ -121,7 +101,7 @@ static esp_err_t read_soil_raw_avg(uint8_t idx, int *raw_out){
   int sum = 0;
   for (int i = 0; i < NUM_SAMPLES; i++) {
     int raw = 0;
-    esp_err_t err = adc_oneshot_read(adc_handle, ch, &raw);
+    esp_err_t err = adc_shared_read(ch, &raw);
     if (err != ESP_OK) return err;
     sum += raw;
     vTaskDelay(pdMS_TO_TICKS(SAMPLE_DELAY_MS));
@@ -162,6 +142,15 @@ static int mv_to_moisture_percent(int mv){
   if (pct < 0.0f) pct = 0.0f;
   if (pct > 100.0f) pct = 100.0f;
   return (int)(pct + 0.5f);
+}
+
+void soil_enable() {
+  gpio_set_level(PIN_SOIL_ON, 1);
+  vTaskDelay(pdMS_TO_TICKS(500)); // allow sensors to power up
+}
+
+void soil_disable() {
+  gpio_set_level(PIN_SOIL_ON, 0);
 }
 
 const struct SoilLevel* soil_get_level(uint8_t idx) {
