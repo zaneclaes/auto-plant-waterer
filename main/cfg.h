@@ -7,6 +7,8 @@
 
 #include <esp_err.h>
 
+#define NUM_ZONES         3 // How many pumps/soil sensors?
+
 #define ZB_MANUFACTURER_NAME "\x0b" "inZania LLC"
 #define ZB_MODEL_IDENTIFIER  "\x13" "Auto Plant Waterer"
 
@@ -17,9 +19,9 @@
 #define KEY_AP_PASS        "ap_pass"
 
 // AP defaults (if nothing saved)
-#define DEFAULT_AP_SSID    "planter"
-#define DEFAULT_AP_PASS    "plant123"     // >= 8 chars for WPA2
-#define DEFAULT_AP_CHANNEL 6
+#define DEFAULT_AP_SSID     "planter"
+#define DEFAULT_AP_PASS     "plant123"     // >= 8 chars for WPA2
+#define DEFAULT_AP_CHANNEL  6
 #define DEFAULT_AP_MAX_CONN 4
 
 #define MAX_SSID_LEN       32

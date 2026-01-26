@@ -5,6 +5,7 @@
 #include "bat.h"
 #include "cfg.h"
 #include "pumps.h"
+#include "soil.h"
 #include "tof.h"
 #include "zb.h"
 
@@ -16,6 +17,11 @@ void app_main(void) {
   cfg_start();
   tof_start();
   pumps_start();
+  soil_start();
+  while (true) {
+    soil_get_level(0);
+    sleep(1);
+  }
   // wifi_start();
   zb_start();
 }

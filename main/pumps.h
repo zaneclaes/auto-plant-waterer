@@ -8,9 +8,9 @@
 #include <stdint.h>
 #include "rom/secure_boot.h"
 
-#define PUMP1_GPIO  (GPIO_NUM_18)
-#define PUMP2_GPIO  (GPIO_NUM_20)
-#define PUMP3_GPIO  (GPIO_NUM_19)
+#define PIN_PUMP1  (GPIO_NUM_18)
+#define PIN_PUMP2  (GPIO_NUM_20)
+#define PIN_PUMP3  (GPIO_NUM_19)
 
 void pumps_start(void);
 void pump_set(uint8_t idx, bool on);

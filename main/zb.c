@@ -25,7 +25,6 @@
 #include "esp_timer.h"
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
 
-/* TAG */
 static const char *TAG = "zb";
 
 /* -----------------------------
@@ -37,12 +36,6 @@ static const char *TAG = "zb";
 #define MIN_REPORTING_SEC   10
 #define MAX_REPORTING_SEC   600
 
-/* Pump GPIOs (set to your pins) */
-
-/* I2C for ToF sensor (set to your pins) */
-/* If you use VL53L0X/VL53L1X etc, set its I2C address here */
-
-/* Zigbee endpoints */
 #define EP_WATER      0x01
 #define EP_PUMP1      0x02
 #define EP_PUMP2      0x03
