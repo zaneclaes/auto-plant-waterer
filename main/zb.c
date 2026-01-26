@@ -21,6 +21,7 @@
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "zcl/esp_zigbee_zcl_command.h"
 // #include "zcl/esp_zigbee_zcl_analog_input.h"
+#include "coord.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
 #include "zcl/esp_zigbee_zcl_humidity_meas.h"
@@ -37,9 +38,9 @@ static const char *TAG = "zb";
 #define MAX_REPORTING_SEC   600
 
 #define EP_WATER      0x01
-#define EP_PUMP1      0x02
-#define EP_PUMP2      0x03
-#define EP_PUMP3      0x04
+#define EP_SOIL1      0x02
+#define EP_SOIL2      0x03
+#define EP_SOIL3      0x04
 
 /* Custom cluster for water level (must be >= ESP_ZB_CUSTOM_CLUSTER_ID_MIN_VAL) */
 #define WATER_CLUSTER_ID              0xFF01
@@ -57,8 +58,7 @@ static uint16_t s_rh_min_x100 = 0; // 0.00%
 static uint16_t s_rh_max_x100 = 10000; // 100.00%
 
 static void zigbee_task(void *pv);
-static void tof_task(void *pv);
-static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message);
+static void report_task(void *pv);
 /* -----------------------------
  * LOCK; prevent power management while joining...
  * ----------------------------- */
@@ -99,19 +99,6 @@ static void start_release_timer_ms(uint32_t ms) {
   ESP_LOGI(TAG, "Starting power management timer...");
   esp_timer_stop(s_release_timer);
   ESP_ERROR_CHECK(esp_timer_start_once(s_release_timer, (uint64_t)ms * 1000ULL));
-}
-
-/* -----------------------------
- * GPIO / PUMPS
- * ----------------------------- */
-
-static uint8_t zb_get_pump_idx(uint8_t endpoint) {
-  if (endpoint == EP_PUMP1) return 0;
-  if (endpoint == EP_PUMP2) return 1;
-  if (endpoint == EP_PUMP3) return 2;
-
-  ESP_LOGW(TAG, "Pump endpoint %u is unknown; assuming idx 0", endpoint);
-  return 0;
 }
 
 /* -----------------------------
@@ -193,33 +180,6 @@ static void humidity_local_config_reporting(void) {
  * Zigbee: device model creation
  * ----------------------------- */
 
-static esp_zb_cluster_list_t *create_onoff_light_clusters(bool initial_on) {
-  esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
-
-  /* Basic cluster */
-  esp_zb_basic_cluster_cfg_t basic_cfg = {0};
-  esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
-
-  /* Add some common Basic attributes (manufacturer/model) */
-  esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *) ZB_MANUFACTURER_NAME);
-  esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *) ZB_MODEL_IDENTIFIER);
-
-  esp_zb_cluster_list_add_basic_cluster(cluster_list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-  /* Identify cluster */
-  esp_zb_identify_cluster_cfg_t identify_cfg = {0};
-  esp_zb_attribute_list_t *identify = esp_zb_identify_cluster_create(&identify_cfg);
-  esp_zb_cluster_list_add_identify_cluster(cluster_list, identify, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-  /* On/Off cluster */
-  esp_zb_on_off_cluster_cfg_t onoff_cfg = {0};
-  onoff_cfg.on_off = initial_on ? 1 : 0;
-  esp_zb_attribute_list_t *onoff = esp_zb_on_off_cluster_create(&onoff_cfg);
-  esp_zb_cluster_list_add_on_off_cluster(cluster_list, onoff, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
-  return cluster_list;
-}
-
 static esp_zb_cluster_list_t *create_water_level_clusters(void) {
   esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
 
@@ -272,96 +232,6 @@ static esp_zb_cluster_list_t *create_water_level_clusters(void) {
   return cluster_list;
 }
 
-static void zigbee_create_endpoints_and_register(void) {
-  esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
-
-  /* Endpoint config templates */
-  esp_zb_endpoint_config_t pump_ep_cfg = {
-    .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-    .app_device_id = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF_SWITCH_CONFIG, /* Reuse HA On/Off Light for pump switch */
-    .app_device_version = 0,
-  };
-
-  /* Pump 1 */
-  {
-    esp_zb_endpoint_config_t ep_cfg = pump_ep_cfg;
-    ep_cfg.endpoint = EP_PUMP1;
-    esp_zb_cluster_list_t *clusters = create_onoff_light_clusters(false);
-    esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
-  }
-  /* Pump 2 */
-  {
-    esp_zb_endpoint_config_t ep_cfg = pump_ep_cfg;
-    ep_cfg.endpoint = EP_PUMP2;
-    esp_zb_cluster_list_t *clusters = create_onoff_light_clusters(false);
-    esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
-  }
-  /* Pump 3 */
-  {
-    esp_zb_endpoint_config_t ep_cfg = pump_ep_cfg;
-    ep_cfg.endpoint = EP_PUMP3;
-    esp_zb_cluster_list_t *clusters = create_onoff_light_clusters(false);
-    esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
-  }
-
-  /* Water level endpoint (custom attribute device) */
-  {
-    esp_zb_endpoint_config_t ep_cfg = {
-      .endpoint = EP_WATER,
-      .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-      .app_device_id = ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
-      .app_device_version = 0,
-    };
-    esp_zb_cluster_list_t *clusters = create_water_level_clusters();
-    esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
-  }
-
-  esp_zb_device_register(ep_list);
-}
-
-/* -----------------------------
- * Zigbee: action callback (ZCL set attribute)
- * ----------------------------- */
-
-static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message) {
-  switch (callback_id) {
-    case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID: {
-      const esp_zb_zcl_set_attr_value_message_t *m = (const esp_zb_zcl_set_attr_value_message_t *) message;
-      if (!m) return ESP_FAIL;
-
-      /* Common info includes dst endpoint, cluster id, etc. */
-      uint8_t endpoint = m->info.dst_endpoint;
-      uint16_t cluster_id = m->info.cluster;
-
-      /* We only care about On/Off cluster writes */
-      if (cluster_id == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
-        if (m->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && m->attribute.data.type ==
-            ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
-          bool on = (*(bool *) m->attribute.data.value) ? true : false;
-          pump_set(zb_get_pump_idx(endpoint), on);
-
-          /* Keep ZCL attribute store consistent with physical state */
-          esp_zb_lock_acquire(portMAX_DELAY);
-          esp_zb_zcl_set_attribute_val(
-            endpoint,
-            ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
-            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-            &on,
-            false
-          );
-          esp_zb_lock_release();
-        }
-      }
-      return ESP_OK;
-    }
-
-    default:
-      /* You’ll see other callbacks here (reports, scenes, etc.) if enabled */
-      return ESP_OK;
-  }
-}
-
 /* -----------------------------
  * Zigbee: signal handler (commissioning / join)
  * ----------------------------- */
@@ -400,7 +270,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
                  esp_zb_get_pan_id(), esp_zb_get_short_address());
         xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
         humidity_bind_to_coordinator();
-        // pumps_start();
         start_release_timer_ms(120000);
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
@@ -447,9 +316,8 @@ static void zigbee_task(void *pv) {
   };
   ESP_ERROR_CHECK(esp_zb_platform_config(&platform_config));
 
-  /* Zigbee stack configuration */
   esp_zb_cfg_t zb_cfg = {
-    .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED, /* or ROUTER if you prefer */
+    .esp_zb_role = ESP_ZB_DEVICE_TYPE_ED,
     .install_code_policy = false,
     .nwk_cfg.zed_cfg = {
       .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_1024MIN,
@@ -462,8 +330,20 @@ static void zigbee_task(void *pv) {
   esp_zb_init(&zb_cfg);
   // esp_zb_zcl_analog_input_init_server();
   esp_zb_zcl_rel_humidity_measurement_init_server();
-  zigbee_create_endpoints_and_register();
-  esp_zb_core_action_handler_register(zb_action_handler);
+
+  esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
+  {
+    esp_zb_endpoint_config_t ep_cfg = {
+      .endpoint = EP_WATER,
+      .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+      .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+      .app_device_version = 0,
+    };
+    esp_zb_cluster_list_t *clusters = create_water_level_clusters();
+    esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
+  }
+
+  esp_zb_device_register(ep_list);
 
   // esp_zb_nvram_erase_at_start(true); // erase NVRAM
   esp_zb_start(false);
@@ -475,7 +355,7 @@ static void zigbee_task(void *pv) {
  * ToF task: update Zigbee attribute
  * ----------------------------- */
 
-static void tof_task(void *pv) {
+static void report_task(void *pv) {
   /* Wait until joined before reporting/updating attributes */
   xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
@@ -534,6 +414,6 @@ void zb_start(void) {
 
   pm_lock_hold_for_join();
   s_zb_events = xEventGroupCreate();
-  xTaskCreate(zigbee_task, "zigbee_task", 8192, NULL, 5, NULL);
-  xTaskCreate(tof_task, "tof_task", 4096, NULL, 4, NULL);
+  xTaskCreate(zigbee_task, "zigbee_task", 0x2000, NULL, 5, NULL);
+  xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
 }

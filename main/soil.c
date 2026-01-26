@@ -17,18 +17,6 @@
 
 static const char *TAG = "soil";
 
-// n.b., must be ADC pins!
-#define PIN_SOIL1     (GPIO_NUM_0)  // D0
-#define ADC_SOIL1     (ADC_CHANNEL_0)
-
-#define PIN_SOIL2     (GPIO_NUM_1)  // D1
-#define ADC_SOIL2     (ADC_CHANNEL_1)
-
-#define PIN_SOIL3     (GPIO_NUM_2)  // D2
-#define ADC_SOIL3     (ADC_CHANNEL_2)
-
-#define PIN_SOIL_ON   (GPIO_NUM_21) // D3
-
 // Configure 3 ADC channels (derived from GPIO)
 const gpio_num_t gpios[3] = { PIN_SOIL1, PIN_SOIL2, PIN_SOIL3 };
 const adc_channel_t adcs[3] = { ADC_SOIL1, ADC_SOIL2, ADC_SOIL3 };

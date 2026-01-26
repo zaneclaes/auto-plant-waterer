@@ -8,20 +8,30 @@
 #include "soil.h"
 #include "tof.h"
 #include "zb.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "main";
 
 void app_main(void) {
-  ESP_LOGI(TAG, "Startup...");
+  ESP_LOGI(TAG, "Starting %d zones...", NUM_ZONES);
   // enable_power_management();
   cfg_start();
   tof_start();
   pumps_start();
   soil_start();
-  while (true) {
-    soil_get_level(0);
-    sleep(1);
-  }
   // wifi_start();
+
+  // gpio_config_t cfg = {
+  //   .mode = GPIO_MODE_OUTPUT,
+  //   .pin_bit_mask =
+  //     (1ULL << PIN_PUMP1) | (1ULL << PIN_PUMP2) | (1ULL << PIN_PUMP3) |
+  //     (1ULL << PIN_SOIL1) | (1ULL << PIN_SOIL2) | (1ULL << PIN_SOIL3) | (1ULL << PIN_SOIL_ON),
+  //   .pull_down_en = GPIO_PULLDOWN_DISABLE,
+  //   .pull_up_en = GPIO_PULLUP_DISABLE,
+  //   .intr_type = GPIO_INTR_DISABLE,
+  // };
+  // ESP_ERROR_CHECK(gpio_config(&cfg));
+
   zb_start();
+  ESP_LOGI(TAG, "Started %d zones.", NUM_ZONES);
 }

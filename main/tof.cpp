@@ -45,7 +45,8 @@ esp_err_t tof_start(void) {
   //   return err;
   // }
   //
-  // ESP_LOGI(TAG, "VL53L0X started");
+  ESP_LOGI(TAG, "VL53L0X started");
+  tof_update();
   return ESP_OK;
 }
 
