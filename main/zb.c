@@ -19,6 +19,7 @@
 // #include "zcl/esp_zigbee_zcl_analog_input.h"
 #include "bat.h"
 #include "coord.h"
+#include "esp_mac.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
 #include "soil.h"
@@ -53,6 +54,8 @@ static const char *TAG = "zb";
 
 static EventGroupHandle_t s_zb_events;
 #define ZB_JOINED_BIT  BIT0
+
+static char s_zb_mac_addr[20];
 
 static uint16_t s_water_level_pct_x100 = 0; // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0; // 0.00%
@@ -419,6 +422,18 @@ static void zb_retry_commissioning(uint8_t param) {
   esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
 }
 
+static void zb_load_mac_addr() {
+  // esp_zb_ieee_addr_t ieee;              // 8 bytes
+  // esp_zb_get_long_address(ieee);        // fills in little-endian bytes :contentReference[oaicite:0]{index=0}
+
+  uint8_t ieee[8] = {0};
+  ESP_ERROR_CHECK(esp_read_mac(ieee, ESP_MAC_IEEE802154));
+
+  sprintf(s_zb_mac_addr, "0x%02x%02x%02x%02x%02x%02x%02x%02x",
+    ieee[0], ieee[1], ieee[2], ieee[3], ieee[4], ieee[5], ieee[6], ieee[7]);
+  ESP_LOGI(TAG, "Zigbee HW Addr %s", s_zb_mac_addr);
+}
+
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
   /* esp-zigbee-lib 1.6.x pattern */
   esp_zb_app_signal_type_t sig =
@@ -637,6 +652,7 @@ static void battery_task(void* pv){
  * ----------------------------- */
 
 void zb_start(void) {
+  zb_load_mac_addr();
   vTaskDelay(pdMS_TO_TICKS(500));   // unknown race condition... required for steering.
 
   pm_lock_hold_for_join();
