@@ -10,7 +10,7 @@
 
 #define VBAT_R1 100000.0f // resistor 1 = 100 kOhm
 #define VBAT_R2 100000.0f // resistor 2 = 100 kOhm
-#define VBAT_DIVIDER_RATIO ((VBAT_R1 + VBAT_R2) / VBAT_R2)
+#define VBAT_DIVIDER_RATIO 1.0f // ((VBAT_R1 + VBAT_R2) / VBAT_R2)
 
 struct BatteryLevel {
   float voltage;      // i.e., 3.7v

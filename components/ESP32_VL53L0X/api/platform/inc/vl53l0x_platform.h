@@ -33,7 +33,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "vl53l0x_def.h"
 #include "vl53l0x_platform_log.h"
 
-#include "driver/i2c.h"   /*!< user specific field */
+#include "driver/i2c_master.h"   /*!< user specific field */
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,6 +57,8 @@ extern "C" {
  *
  */
 typedef struct {
+    i2c_master_dev_handle_t i2c_dev;
+
     VL53L0X_DevData_t Data;               /*!< embed ST Ewok Dev  data as "Data"*/
 
     /*!< user specific field */

@@ -11,12 +11,8 @@
 
 #include "esp_log.h"
 #include "esp_err.h"
-
 #include "driver/gpio.h"
-#include "driver/i2c.h"
 
-/* Zigbee */
-#include "esp_check.h"
 #include "esp_zigbee_core.h"
 #include "zcl/esp_zigbee_zcl_common.h"
 #include "zcl/esp_zigbee_zcl_command.h"

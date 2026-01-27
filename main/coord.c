@@ -11,6 +11,9 @@
 #include "esp_adc/adc_oneshot.h"
 #include "soc/gpio_num.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 static const char *TAG = "coord";
 
 #define PIN_LED     GPIO_NUM_15
@@ -56,6 +59,21 @@ adc_channel_t adc_start(int pin) {
 
 esp_err_t adc_shared_read(const adc_channel_t ch, int* raw) {
   return adc_oneshot_read(adc_handle, ch, raw);
+}
+
+#define NUM_SAMPLES        8
+#define SAMPLE_DELAY_MS    5
+esp_err_t adc_read_avg(const adc_channel_t ch, int* out) {
+  int sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    int raw = 0;
+    esp_err_t err = adc_shared_read(ch, &raw);
+    if (err != ESP_OK) return err;
+    sum += raw;
+    vTaskDelay(pdMS_TO_TICKS(SAMPLE_DELAY_MS));
+  }
+  *out = sum / NUM_SAMPLES;
+  return ESP_OK;
 }
 
 void on_joined() {

@@ -3,7 +3,7 @@
 #include "cfg.h"
 #include "esp_check.h"
 #include "VL53l0X.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 static const char *TAG = "tof";
@@ -55,6 +55,11 @@ esp_err_t tof_start(void) {
 }
 
 const struct WaterLevel* tof_update(void) {
+  if (!get_cfg_flag(CFG_FLAG_TOF)) {
+    ESP_LOGW(TAG, "ToF not configured");
+    return &water_level;
+  }
+
   uint16_t mm = 0;
   bool res = vl.read(&mm);
   if (res) {

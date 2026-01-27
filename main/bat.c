@@ -11,6 +11,8 @@
 #include "esp_adc/adc_cali_scheme.h"
 
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "bat";
 
@@ -50,18 +52,10 @@ void enable_power_management(void) {
 }
 
 static float read_battery_voltage(void){
-  int mv_sum = 0;
-
-  for (int i = 0; i < 8; i++) {
-    int raw, mv; // average 8 samples for noise reduction (instead of using capacitor)
-    adc_shared_read(adc_channel, &raw);
-    adc_cali_raw_to_voltage(adc_cali_handle, raw, &mv);
-    ESP_LOGI(TAG, "Battery Voltage: %d -> %d", raw, mv);
-    mv_sum += mv;
-  }
-
-  float v_adc = (mv_sum / 8) / 1000.0f;
-  return v_adc * VBAT_DIVIDER_RATIO;
+  int raw, mv;
+  adc_read_avg(adc_channel, &raw);
+  adc_cali_raw_to_voltage(adc_cali_handle, raw, &mv);
+  return mv * VBAT_DIVIDER_RATIO / 1000.0f;
 }
 
 static uint8_t battery_pct_from_voltage(float v) {

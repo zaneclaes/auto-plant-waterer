@@ -11,7 +11,7 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #include "vl53l0x_api.h"
 #include "vl53l0x_def.h"
@@ -92,18 +92,36 @@ public:
    * @param new_address right-aligned address
    */
   bool setDeviceAddress(uint8_t new_address) {
-    VL53L0X_Error status =
-        // VL53L0X_SetDeviceAddress expects the address to be left-aligned
-        VL53L0X_SetDeviceAddress(&vl53l0x_dev, new_address << 1);
+    // ST API expects left-aligned address
+    VL53L0X_Error status = VL53L0X_SetDeviceAddress(&vl53l0x_dev, new_address << 1);
     if (status != VL53L0X_ERROR_NONE) {
-      print_pal_error(status, "VL53L0X_PerformSingleRangingMeasurement");
+      print_pal_error(status, "VL53L0X_SetDeviceAddress");
       return false;
     }
 
+    // Update legacy field
     vl53l0x_dev.i2c_address = new_address;
+
+    // IMPORTANT: update the new-driver device handle to use the new 7-bit address
+    if (i2c_bus) {
+      // Remove old device handle and add a new one with the updated address.
+      // (No "set address" API; re-add device is the supported approach.)
+      if (vl53l0x_dev.i2c_dev) {
+        ESP_ERROR_CHECK(i2c_master_bus_rm_device(vl53l0x_dev.i2c_dev));
+        vl53l0x_dev.i2c_dev = nullptr;
+      }
+
+      i2c_device_config_t dev_cfg = {};
+      dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+      dev_cfg.device_address = new_address;     // right-aligned 7-bit
+      dev_cfg.scl_speed_hz = 400000;            // or store your freq and reuse it
+
+      ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &vl53l0x_dev.i2c_dev));
+    }
 
     return true;
   }
+
   bool read(uint16_t *pRangeMilliMeter) {
     if (gpio_gpio1 != GPIO_NUM_MAX)
       return readSingleWithInterrupt(pRangeMilliMeter);
@@ -196,17 +214,33 @@ public:
   }
 
   void i2cMasterInit(gpio_num_t pin_sda = GPIO_NUM_21,
-                     gpio_num_t pin_scl = GPIO_NUM_22, uint32_t freq = 400000) {
-    i2c_config_t conf;
-    memset(&conf, 0, sizeof(i2c_config_t));
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = pin_sda;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_io_num = pin_scl;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = freq;
-    ESP_ERROR_CHECK(i2c_param_config(i2c_port, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(i2c_port, conf.mode, 0, 0, 0));
+                   gpio_num_t pin_scl = GPIO_NUM_22,
+                   uint32_t freq = 400000) {
+    // If already initialized, do nothing (or you can re-init by deleting first)
+    if (i2c_bus && vl53l0x_dev.i2c_dev) return;
+
+    // Create I2C master bus
+    i2c_master_bus_config_t bus_cfg = {};
+    bus_cfg.i2c_port = i2c_port;
+    bus_cfg.sda_io_num = pin_sda;
+    bus_cfg.scl_io_num = pin_scl;
+    bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_cfg.glitch_ignore_cnt = 7;
+    bus_cfg.flags.enable_internal_pullup = true; // uses internal pullups; ok if you also have external
+
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &i2c_bus));
+
+    // Add the VL53L0X device to the bus
+    i2c_device_config_t dev_cfg = {};
+    dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dev_cfg.device_address = VL53L0X_I2C_ADDRESS_DEFAULT; // 0x29 right-aligned
+    dev_cfg.scl_speed_hz = freq;
+
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &vl53l0x_dev.i2c_dev));
+
+    // Keep legacy fields updated if other code uses them
+    vl53l0x_dev.i2c_port_num = i2c_port;
+    vl53l0x_dev.i2c_address = VL53L0X_I2C_ADDRESS_DEFAULT;
   }
 
   bool setTimingBudget(uint32_t TimingBudgetMicroSeconds) {
@@ -221,6 +255,8 @@ public:
   }
 
 protected:
+  i2c_master_bus_handle_t i2c_bus = nullptr;
+
   static constexpr const char *TAG = "VL53L0X";
   i2c_port_t i2c_port;
   gpio_num_t gpio_xshut;

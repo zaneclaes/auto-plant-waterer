@@ -5,8 +5,11 @@
 #ifndef AUTO_PLANT_WATERER_NVS_H
 #define AUTO_PLANT_WATERER_NVS_H
 
-#include <esp_err.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+#include <esp_err.h>
 #include "rom/secure_boot.h"
 
 #define DEF_NUM_ZONES         3 // How many pumps/soil sensors?
@@ -53,5 +56,9 @@ void set_num_zones(uint8_t num_zones);
 uint8_t get_num_zones();
 
 esp_err_t cfg_save(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //AUTO_PLANT_WATERER_NVS_H

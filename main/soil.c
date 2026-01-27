@@ -38,9 +38,6 @@ struct SoilLevel levels[3] = {
   }
 };
 
-#define NUM_SAMPLES        32
-#define SAMPLE_DELAY_MS    5
-
 static int g_dry_mv = 2800;   // reading in air / dry soil (mV)
 static int g_wet_mv = 1400;   // reading in water / saturated soil (mV)
 
@@ -97,21 +94,6 @@ void soil_start(void) {
 #endif
 }
 
-static esp_err_t read_soil_raw_avg(uint8_t idx, int *raw_out){
-  if (idx > NUM_SAMPLES) return ESP_FAIL;
-  adc_channel_t ch = adcs[idx];
-  int sum = 0;
-  for (int i = 0; i < NUM_SAMPLES; i++) {
-    int raw = 0;
-    esp_err_t err = adc_shared_read(ch, &raw);
-    if (err != ESP_OK) return err;
-    sum += raw;
-    vTaskDelay(pdMS_TO_TICKS(SAMPLE_DELAY_MS));
-  }
-  *raw_out = sum / NUM_SAMPLES;
-  return ESP_OK;
-}
-
 static int raw_to_millivolts(int raw, int *mv_out){
   if (cali_enabled) {
     int mv = 0;
@@ -156,8 +138,7 @@ void soil_disable() {
 }
 
 const struct SoilLevel* soil_get_level(uint8_t idx) {
-  if (idx > NUM_SAMPLES) return NULL;
-  esp_err_t err = read_soil_raw_avg(idx, &levels[idx].raw);
+  esp_err_t err = adc_read_avg(idx, &levels[idx].raw);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to read soil: %s", esp_err_to_name(err));
     return NULL;
