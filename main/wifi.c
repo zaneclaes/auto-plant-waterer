@@ -29,7 +29,7 @@ static const int WIFI_SCAN_DONE_BIT = BIT2;
 
 static int s_sta_retry_count = 0;
 
-static wifi_cfg_t s_cfg;
+static WifiCfg s_cfg;
 
 static httpd_handle_t s_httpd = NULL;
 static esp_netif_t *s_netif_sta = NULL;
@@ -319,7 +319,7 @@ static esp_err_t http_post_save(httpd_req_t *req) {
   buf[total] = 0;
 
   // Parse form values into temp cfg
-  wifi_cfg_t new_cfg = s_cfg;
+  WifiCfg new_cfg = s_cfg;
   form_get_value(buf, "sta_ssid", new_cfg.sta_ssid, sizeof(new_cfg.sta_ssid));
   form_get_value(buf, "sta_pass", new_cfg.sta_pass, sizeof(new_cfg.sta_pass));
   form_get_value(buf, "ap_ssid", new_cfg.ap_ssid, sizeof(new_cfg.ap_ssid));

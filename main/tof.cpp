@@ -1,5 +1,6 @@
 #include "tof.h"
 
+#include "cfg.h"
 #include "esp_check.h"
 #include "VL53l0X.h"
 #include "driver/i2c.h"
@@ -16,10 +17,12 @@ static struct WaterLevel water_level = {
 };
 
 esp_err_t tof_start(void) {
+  ESP_LOGI(TAG, "ToF Starting...");
   vl.i2cMasterInit(TOF_I2C_SDA_GPIO, TOF_I2C_SCL_GPIO);
 
   if (!vl.init()) {
     ESP_LOGE(TAG, "Failed to initialize VL53L0X :(");
+    // set_cfg_flag(CFG_FLAG_TOF, false);
     return ESP_FAIL;
   }
 
@@ -46,6 +49,7 @@ esp_err_t tof_start(void) {
   // }
   //
   ESP_LOGI(TAG, "VL53L0X started");
+  // set_cfg_flag(CFG_FLAG_TOF, true);
   tof_update();
   return ESP_OK;
 }

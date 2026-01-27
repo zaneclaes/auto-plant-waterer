@@ -22,8 +22,8 @@ static struct BatteryLevel battery_level = {
   .percent = 0,
 };
 
-void battery_start(void)
-{
+void battery_start(void){
+  ESP_LOGI(TAG, "Battery Starting...");
   adc_channel = adc_start(PIN_BAT);
 
   adc_cali_curve_fitting_config_t cali_cfg = {
@@ -37,6 +37,7 @@ void battery_start(void)
   if (err != ESP_OK) {
     adc_cali_handle = NULL;
   }
+  battery_update();
 }
 
 void enable_power_management(void) {
@@ -55,6 +56,7 @@ static float read_battery_voltage(void){
     int raw, mv; // average 8 samples for noise reduction (instead of using capacitor)
     adc_shared_read(adc_channel, &raw);
     adc_cali_raw_to_voltage(adc_cali_handle, raw, &mv);
+    ESP_LOGI(TAG, "Battery Voltage: %d -> %d", raw, mv);
     mv_sum += mv;
   }
 

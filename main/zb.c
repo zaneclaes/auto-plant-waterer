@@ -40,7 +40,7 @@ static const char *TAG = "zb";
 #define MIN_REPORTING_SEC   10
 #define MAX_REPORTING_SEC   600
 
-#define BAT_REPORTING_SEC   60 * 30
+#define BAT_REPORTING_SEC   60 // * 30
 
 #define EP_WATER      0x01
 #define EP_SOIL1      0x02
@@ -122,10 +122,11 @@ static void zb_update_battery(void) {
 }
 
 static uint8_t get_soil_level_endpoint(uint8_t idx) {
-  if (idx == 0 && NUM_ZONES >= 1) return EP_SOIL1;
-  if (idx == 1 && NUM_ZONES >= 2) return EP_SOIL2;
-  if (idx == 2 && NUM_ZONES >= 3) return EP_SOIL3;
-  ESP_LOGW(TAG, "Soil level index #%u invalid (%u zones)", idx, NUM_ZONES);
+  uint8_t num_zones = get_num_zones();
+  if (idx == 0 && num_zones >= 1) return EP_SOIL1;
+  if (idx == 1 && num_zones >= 2) return EP_SOIL2;
+  if (idx == 2 && num_zones >= 3) return EP_SOIL3;
+  ESP_LOGW(TAG, "Soil level index #%u invalid (%u zones)", idx, num_zones);
   return EP_SOIL1;
 }
 
@@ -133,7 +134,7 @@ static uint8_t get_soil_level_idx(uint8_t ep) {
   if (ep == EP_SOIL1) return 0;
   if (ep == EP_SOIL2) return 1;
   if (ep == EP_SOIL3) return 2;
-  ESP_LOGW(TAG, "Soil level endpoint %u invalid (%u zones)", ep, NUM_ZONES);
+  ESP_LOGW(TAG, "Soil level endpoint %u invalid", ep);
   return 0;
 }
 
@@ -321,7 +322,8 @@ static void battery_bind_to_coordinator() {
 static void on_zb_joined() {
   water_level_bind_to_coordinator();
   battery_bind_to_coordinator();
-  for (uint8_t i = 0; i < NUM_ZONES; i++) {
+  uint8_t num_zones = get_num_zones();
+  for (uint8_t i = 0; i < num_zones; i++) {
     soil_level_bind_to_coordinator(i);
   }
   on_joined();
@@ -523,7 +525,8 @@ static void zigbee_task(void *pv) {
     esp_zb_ep_list_add_ep(ep_list, clusters, ep_cfg);
   }
 
-  for (uint8_t i = 0; i < NUM_ZONES; i++) {
+  uint8_t num_zones = get_num_zones();
+  for (uint8_t i = 0; i < num_zones; i++) {
     uint8_t ep = get_soil_level_endpoint(i);
     esp_zb_endpoint_config_t sl_cfg = {
       .endpoint = ep,
@@ -547,20 +550,36 @@ static void zigbee_task(void *pv) {
  * ToF task: update Zigbee attribute
  * ----------------------------- */
 
+static void timed_water(uint8_t idx, uint16_t sec) {
+  ESP_LOGI(TAG, "Watering #%u (at %u%%) for %u seconds...", idx, s_soil_level_pct_x100[idx], sec);
+  pump_set(idx, true);
+  vTaskDelay(pdMS_TO_TICKS(sec * 1000));
+  pump_set(idx, false);
+}
+
 static void report_task(void *pv) {
   /* Wait until joined before reporting/updating attributes */
   xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
   while (true) {
+    uint8_t num_zones = get_num_zones();
     // Update all values into local memory first
     const struct WaterLevel* wl = tof_update();
     s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
     soil_enable();
-    for (uint8_t i = 0; i < NUM_ZONES; i++) {
+    for (uint8_t i = 0; i < num_zones; i++) {
       const struct SoilLevel* sl = soil_get_level(i);
       s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
     }
     soil_disable();
+
+    for (uint8_t i = 0; i < num_zones; i++) {
+      if (s_soil_level_pct_x100[i] < 1000) {
+        timed_water(i, 10);
+      }
+    }
+
+    set_led(s_water_level_pct_x100 < 500);
 
     // Lock once and send all updates to Zigbee
     esp_zb_lock_acquire(portMAX_DELAY);
@@ -572,7 +591,7 @@ static void report_task(void *pv) {
       &s_water_level_pct_x100,
       false
     );
-    for (uint8_t i = 0; i < NUM_ZONES; i++) {
+    for (uint8_t i = 0; i < num_zones; i++) {
       esp_zb_zcl_set_attribute_val(
         get_soil_level_endpoint(i),
         ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,

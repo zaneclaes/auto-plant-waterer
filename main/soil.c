@@ -48,7 +48,8 @@ static adc_cali_handle_t cali_handle;
 static bool cali_enabled = false;
 
 void soil_start(void) {
-  // Power gate pin (D3)
+  ESP_LOGI(TAG, "Soil Starting...");
+
   gpio_config_t pwr = {
     .pin_bit_mask = 1ULL << PIN_SOIL_ON,
     .mode = GPIO_MODE_OUTPUT,
@@ -59,7 +60,8 @@ void soil_start(void) {
   ESP_ERROR_CHECK(gpio_config(&pwr));
   gpio_set_level(PIN_SOIL_ON, 0);
 
-  for (int i = 0; i < NUM_ZONES; i++) {
+  uint8_t num_zones = get_num_zones();
+  for (int i = 0; i < num_zones; i++) {
     adcs[i] = adc_start(gpios[i]);
     ESP_LOGI(TAG, "Soil %d: GPIO%d -> CH_%d", i, (int)gpios[i], (int)adcs[i]);
   }

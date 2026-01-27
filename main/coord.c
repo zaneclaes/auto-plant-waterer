@@ -18,6 +18,7 @@ static const char *TAG = "coord";
 static adc_oneshot_unit_handle_t adc_handle;
 
 void shared_start() {
+  ESP_LOGI(TAG, "Shared Start...");
   gpio_config_t cfg = {
     .pin_bit_mask = 1ULL << PIN_LED,
     .mode = GPIO_MODE_OUTPUT,

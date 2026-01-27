@@ -14,6 +14,9 @@
 
 static const char *TAG = "cfg";
 
+static uint32_t s_flags = 0;
+static uint8_t s_num_zones = DEF_NUM_ZONES;
+
 static esp_err_t nvs_get_str_or_empty(nvs_handle_t h, const char *key, char *out, size_t out_sz) {
   size_t needed = 0;
   esp_err_t err = nvs_get_str(h, key, NULL, &needed);
@@ -43,13 +46,38 @@ static esp_err_t nvs_get_str_or_empty(nvs_handle_t h, const char *key, char *out
   return nvs_get_str(h, key, out, &needed);
 }
 
-esp_err_t load_wifi_cfg(wifi_cfg_t *cfg) {
+void set_cfg_flag(cfg_flag_t flag, bool on) {
+  if (on) s_flags |= flag;
+  else    s_flags &= ~flag;
+}
+
+bool get_cfg_flag(cfg_flag_t flag) { return (s_flags & flag) != 0; }
+void set_num_zones(uint8_t num_zones) { s_num_zones = num_zones; }
+uint8_t get_num_zones() { return s_num_zones < 1 ? DEF_NUM_ZONES : s_num_zones; }
+
+void cfg_set(nvs_handle_t h) {
+  esp_err_t err = nvs_set_u32(h, KEY_FLAGS, s_flags);
+  if (err != ESP_OK) ESP_LOGW(TAG, "nvs_set: %s: %d", KEY_FLAGS, err);
+  err = nvs_set_u8(h, KEY_NUM_ZONES, s_num_zones);
+  if (err != ESP_OK) ESP_LOGW(TAG, "nvs_set: %s: %d", KEY_NUM_ZONES, err);
+}
+
+esp_err_t cfg_save(void) {
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+  if (err != ESP_OK) return err;
+  cfg_set(h);
+  err = nvs_commit(h);
+  nvs_close(h);
+  return err;
+}
+
+esp_err_t load_wifi_cfg(WifiCfg *cfg) {
   memset(cfg, 0, sizeof(*cfg));
 
   nvs_handle_t h;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
   if (err == ESP_ERR_NVS_NOT_FOUND) {
-    // Namespace not created yet; that's fine.
     ESP_LOGI(TAG, "NVS namespace not found; using defaults");
     goto defaults;
   }
@@ -67,8 +95,6 @@ defaults:
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(cfg->ap_ssid, sizeof(cfg->ap_ssid) - 1, "%s-%02x%02x%02x", DEFAULT_AP_SSID, mac[3], mac[4], mac[5]);
-
-    // strncpy(cfg->ap_ssid, DEFAULT_AP_SSID, sizeof(cfg->ap_ssid) - 1);
   }
   if (cfg->ap_pass[0] == 0) {
     strncpy(cfg->ap_pass, DEFAULT_AP_PASS, sizeof(cfg->ap_pass) - 1);
@@ -76,7 +102,7 @@ defaults:
   return ESP_OK;
 }
 
-esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg) {
+esp_err_t save_wifi_cfg(const WifiCfg *cfg) {
   nvs_handle_t h;
   ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h));
 
@@ -91,7 +117,7 @@ esp_err_t save_wifi_cfg(const wifi_cfg_t *cfg) {
 }
 
 void cfg_start() {
-  /* Zigbee examples expect NVS available (commissioning, network params, etc.) */
+  ESP_LOGI(TAG, "Cfg Starting...");
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
@@ -99,4 +125,19 @@ void cfg_start() {
   } else {
     ESP_ERROR_CHECK(err);
   }
+
+  nvs_handle_t h;
+  ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h));
+  err = nvs_get_u8(h, KEY_NUM_ZONES, &s_num_zones);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGI(TAG, "NVS namespace creating (setting defaults)...");
+    s_num_zones = DEF_NUM_ZONES;
+    cfg_set(h);
+    ESP_ERROR_CHECK(nvs_commit(h));
+  } else { // load the rest of the settings... but still set defaults on error
+    ESP_ERROR_CHECK(err);
+    if (nvs_get_u32(h, KEY_FLAGS, &s_flags) != ESP_OK) { s_flags = 0; }
+  }
+
+  nvs_close(h);
 }

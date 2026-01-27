@@ -12,8 +12,8 @@ extern "C" {
 #endif
 
 /* Water endpoint will expose Level Control cluster (0x0008) */
-#define WATER_LEVEL_MIN_MM   150   // <-- set this: mm when tank is "100%" full (closest sensor distance)
-#define WATER_LEVEL_MAX_MM   600   // <-- set this: mm when tank is "0%" empty (farthest distance)
+#define WATER_LEVEL_MIN_MM   2   // <-- set this: mm when tank is "100%" full (closest sensor distance)
+#define WATER_LEVEL_MAX_MM   100   // <-- set this: mm when tank is "0%" empty (farthest distance)
 
 #define TOF_I2C_PORT      I2C_NUM_0
 #define TOF_I2C_SDA_GPIO  (GPIO_NUM_22) // SDA = GPIO22 (XIAO pin labeled SDA / D6)
