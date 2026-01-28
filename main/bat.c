@@ -52,7 +52,7 @@ static float read_battery_voltage(void){
   int raw, mv;
   adc_read_avg(adc_channel, &raw);
   adc_cali_raw_to_voltage(adc_cali_handle, raw, &mv);
-  return mv * VBAT_DIVIDER_RATIO / 1000.0f;
+  return ((float)mv) * VBAT_DIVIDER_RATIO / 1000.0f;
 }
 
 static uint8_t battery_pct_from_voltage(float v) {

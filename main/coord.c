@@ -20,6 +20,10 @@ static const char *TAG = "coord";
 
 static adc_oneshot_unit_handle_t adc_handle;
 
+void set_led(bool on) {
+  gpio_set_level(PIN_LED, on ? 0 : 1);
+}
+
 void shared_start() {
   ESP_LOGI(TAG, "Shared Start...");
   gpio_config_t cfg = {
@@ -37,10 +41,6 @@ void shared_start() {
     .ulp_mode = ADC_ULP_MODE_DISABLE,
   };
   ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
-}
-
-void set_led(bool on) {
-  gpio_set_level(PIN_LED, on ? 0 : 1);
 }
 
 adc_channel_t adc_start(int pin) {

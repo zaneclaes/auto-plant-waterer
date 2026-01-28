@@ -38,8 +38,8 @@ struct SoilLevel levels[3] = {
   }
 };
 
-static int g_dry_mv = 2800;   // reading in air / dry soil (mV)
-static int g_wet_mv = 1400;   // reading in water / saturated soil (mV)
+static int g_dry_mv = 2550; //  2800;   // reading in air / dry soil (mV)
+static int g_wet_mv = 1150; // 1400;   // reading in water / saturated soil (mV)
 
 static adc_cali_handle_t cali_handle;
 static bool cali_enabled = false;

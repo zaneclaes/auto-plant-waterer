@@ -16,6 +16,7 @@ extern "C" {
 
 #define ZB_MANUFACTURER_NAME "\x0b" "inZania LLC"
 #define ZB_MODEL_IDENTIFIER  "\x13" "Auto Plant Waterer"
+#define ZB_VERSION_NUMBER    "v0.0.1"
 
 #define NVS_NAMESPACE      "wifi_cfg"
 #define KEY_STA_SSID       "sta_ssid"

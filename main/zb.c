@@ -54,6 +54,7 @@ static const char *TAG = "zb";
 
 static EventGroupHandle_t s_zb_events;
 #define ZB_JOINED_BIT  BIT0
+#define ZB_JOINING_BIT  BIT1
 
 static char s_zb_mac_addr[20];
 
@@ -68,6 +69,13 @@ static uint8_t s_battery_percent = 0;
 
 static void zigbee_task(void *pv);
 static void report_task(void *pv);
+
+static inline bool zb_is_joined(void) {
+  return (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0;
+}
+static inline bool zb_is_commissioning(void) {
+  return (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0;
+}
 /* -----------------------------
  * LOCK; prevent power management while joining...
  * ----------------------------- */
@@ -319,13 +327,17 @@ static void battery_bind_to_coordinator() {
 }
 
 static void on_zb_joined() {
+  ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx, MAC: %s)",
+           esp_zb_get_pan_id(), esp_zb_get_short_address(), s_zb_mac_addr);
+  xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
+  xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+  on_joined();
   water_level_bind_to_coordinator();
   battery_bind_to_coordinator();
   uint8_t num_zones = get_num_zones();
   for (uint8_t i = 0; i < num_zones; i++) {
     soil_level_bind_to_coordinator(i);
   }
-  on_joined();
   start_release_timer_ms(120000);
 }
 
@@ -341,6 +353,7 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
     esp_zb_attribute_list_t *basic = esp_zb_basic_cluster_create(&basic_cfg);
     esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *) ZB_MANUFACTURER_NAME);
     esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *) ZB_MODEL_IDENTIFIER);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, ZB_VERSION_NUMBER);
     esp_zb_cluster_list_add_basic_cluster(cluster_list, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
   }
 
@@ -416,12 +429,7 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
 
 /* -----------------------------
  * Zigbee: signal handler (commissioning / join)
- * ----------------------------- */
-static void zb_retry_commissioning(uint8_t param) {
-  (void) param;
-  esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-}
-
+* ----------------------------- */
 static void zb_load_mac_addr() {
   // esp_zb_ieee_addr_t ieee;              // 8 bytes
   // esp_zb_get_long_address(ieee);        // fills in little-endian bytes :contentReference[oaicite:0]{index=0}
@@ -434,8 +442,35 @@ static void zb_load_mac_addr() {
   ESP_LOGI(TAG, "Zigbee HW Addr %s", s_zb_mac_addr);
 }
 
+static bool zb_check_joined() {
+  uint16_t short_addr = esp_zb_get_short_address();
+  if (short_addr != 0xFFFF && short_addr != 0x0000) {
+    on_zb_joined();
+    return true;
+  }
+  return false;
+}
+
+static void zb_join(uint8_t param) {
+  if (zb_is_joined()) {
+    ESP_LOGI(TAG, "Skipping join (already joined)");
+    return;
+  }
+  if (zb_is_commissioning()) {
+    ESP_LOGI(TAG, "Skipping join (already trying to join)");
+    return;
+  }
+  if (zb_check_joined()) {
+    ESP_LOGI(TAG, "Watchdog: looks joined, skipping");
+    return;
+  }
+  ESP_LOGI(TAG, "Attempting to join...");
+  (void) param;
+  xEventGroupSetBits(s_zb_events, ZB_JOINING_BIT);
+  esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+}
+
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
-  /* esp-zigbee-lib 1.6.x pattern */
   esp_zb_app_signal_type_t sig =
       (signal_s && signal_s->p_app_signal)
         ? *(esp_zb_app_signal_type_t *) signal_s->p_app_signal
@@ -445,44 +480,50 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
 
   switch (sig) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-      ESP_LOGI(TAG, "Zigbee stack initialized, start commissioning (steering)");
-      esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+      ESP_LOGI(TAG, "Zigbee stack initialized for MAC %s", s_zb_mac_addr);
+      esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
       break;
 
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
-      if (status == ESP_OK) {
-        esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-      } else {
-        esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
+    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT: {
+      bool factory_new = esp_zb_bdb_is_factory_new();
+
+      ESP_LOGI(TAG, "%s -> factory_new=%d",
+               sig == ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START ? "First start" : "Reboot",
+               factory_new);
+
+      if (factory_new) {
+        ESP_LOGI(TAG, "Factory new -> steering");
+        zb_join(0);
+      } else if (!zb_check_joined()) {
+        ESP_LOGI(TAG, "Not factory new -> wait for rejoin; start watchdog");
+        esp_zb_scheduler_alarm(zb_join, 0, 30000);
       }
       break;
+    }
 
     case ESP_ZB_BDB_SIGNAL_STEERING:
+      xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
       if (status == ESP_OK) {
-        ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx)",
-                 esp_zb_get_pan_id(), esp_zb_get_short_address());
-        xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
         on_zb_joined();
       } else {
         ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
-        /* schedule retry (see wrapper in section 3) */
-        esp_zb_scheduler_alarm(zb_retry_commissioning, 0, 3000);
+        esp_zb_scheduler_alarm(zb_join, 0, 3000);
       }
       break;
 
     case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
-      EventBits_t bits = xEventGroupGetBits(s_zb_events);
-      if (bits & ZB_JOINED_BIT) {
+      if (zb_is_joined() && !zb_is_commissioning()) {
         // ESP_LOGI(TAG, "Zigbee sleeping...?");
         esp_zb_sleep_now();
       }
       break;
 
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
-      ESP_LOGW(TAG, "Left network");
+      ESP_LOGW(TAG, "Left network; will rejoin shortly.");
       xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
-      esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+      xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+      esp_zb_scheduler_alarm(zb_join, 0, 1000);
       break;
 
     default:
@@ -589,8 +630,6 @@ static void report_task(void *pv) {
         timed_water(i, 10);
       }
     }
-
-    set_led(s_water_level_pct_x100 < 500);
 
     // Lock once and send all updates to Zigbee
     esp_zb_lock_acquire(portMAX_DELAY);
