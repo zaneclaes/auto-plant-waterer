@@ -139,5 +139,10 @@ void cfg_start() {
     if (nvs_get_u32(h, KEY_FLAGS, &s_flags) != ESP_OK) { s_flags = 0; }
   }
 
+  if (DO_RESET) {
+    set_cfg_flag(CFG_FLAG_RESET, true);
+    ESP_LOGW(TAG, "Build includes DO_RESET flag; will always reset!");
+  }
+
   nvs_close(h);
 }

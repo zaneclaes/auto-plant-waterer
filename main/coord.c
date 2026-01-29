@@ -4,9 +4,15 @@
 
 #include "coord.h"
 
+#include "bat.h"
+#include "cfg.h"
 #include "esp_log.h"
+#include "esp_pm.h"
+#include "esp_timer.h"
 #include "pumps.h"
 #include "soil.h"
+#include "tof.h"
+#include "zb.h"
 #include "driver/gpio.h"
 #include "esp_adc/adc_oneshot.h"
 #include "soc/gpio_num.h"
@@ -24,8 +30,131 @@ void set_led(bool on) {
   gpio_set_level(PIN_LED, on ? 0 : 1);
 }
 
+/* -----------------------------
+ * Events / signaling for joining
+ * ----------------------------- */
+
+static EventGroupHandle_t s_zb_events;
+#define ZB_JOINED_BIT     BIT0
+#define ZB_JOINING_BIT    BIT1
+#define ZB_READY_BIT      BIT2
+
+bool is_joined(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0; }
+bool is_joining(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0; }
+bool is_ready(void) { return (xEventGroupGetBits(s_zb_events) & ZB_READY_BIT) != 0; }
+
+void set_joined(bool joined) {
+  if (joined) xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
+  else xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
+}
+
+void set_joining(bool joining) {
+  if (joining) xEventGroupSetBits(s_zb_events, ZB_JOINING_BIT);
+  else xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+}
+
+void set_ready(bool ready) {
+  if (ready) xEventGroupSetBits(s_zb_events, ZB_READY_BIT);
+  else xEventGroupClearBits(s_zb_events, ZB_READY_BIT);
+}
+
+void wait_for_join(void) {
+  xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
+/* -----------------------------
+ * LOCK; prevent power management while joining...
+ * ----------------------------- */
+
+static esp_pm_lock_handle_t s_pm_no_ls_lock;
+static esp_pm_lock_handle_t s_pm_cpu_max_lock;
+static esp_timer_handle_t s_release_timer;
+
+void pm_lock(void) {
+  ESP_LOGI(TAG, "Pausing power management...");
+  if (!s_pm_no_ls_lock) {
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "zb_join", &s_pm_no_ls_lock));
+  }
+  if (!s_pm_cpu_max_lock) {
+    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "zb_join_cpu", &s_pm_cpu_max_lock));
+  }
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_no_ls_lock));
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
+}
+
+static void pm_lock_release_after_join(void *arg) {
+  if (!is_joined()) {
+    ESP_LOGW(TAG, "Power management timer hit, but not joined");
+    return;
+  }
+  if (s_pm_no_ls_lock) {
+    ESP_LOGI(TAG, "Resuming power management...");
+    esp_pm_lock_release(s_pm_no_ls_lock);
+  }
+  if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
+  set_ready(true);
+}
+
+void pm_release_after_ms(uint32_t ms) {
+  if (!s_release_timer) {
+    const esp_timer_create_args_t targs = {
+      .callback = &pm_lock_release_after_join,
+      .name = "zb_release_ls",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_release_timer));
+  }
+
+  ESP_LOGI(TAG, "Starting power management timer...");
+  esp_timer_stop(s_release_timer);
+  ESP_ERROR_CHECK(esp_timer_start_once(s_release_timer, (uint64_t)ms * 1000ULL));
+}
+
+
+static void timed_water(uint8_t idx, uint16_t sec) {
+  ESP_LOGI(TAG, "Watering #%u for %u seconds...", idx, sec);
+  pump_set(idx, true);
+  vTaskDelay(pdMS_TO_TICKS(sec * 1000));
+  pump_set(idx, false);
+}
+
+
+static void report_task(void *pv) {
+  while (is_joined()) {
+    uint8_t num_zones = get_num_zones();
+    update_water_level();
+    soil_enable();
+    for (uint8_t i = 0; i < num_zones; i++) {
+      update_soil_level(i);
+    }
+    soil_disable();
+
+    for (uint8_t i = 0; i < num_zones; i++) {
+      const struct SoilLevel* sl = get_soil_level(i);
+      if (sl->percent < 10) {
+        timed_water(i, 10);
+      }
+    }
+
+    zb_report_sensors();
+    vTaskDelay(pdMS_TO_TICKS(DEF_REPORTING_MIN_SEC * 1000));
+  }
+  ESP_LOGI(TAG, "Reporting ended");
+  vTaskDelete(NULL);
+}
+
+static void battery_task(void* pv){
+  while (is_joined()) {
+    update_battery();
+    zb_report_battery();
+    vTaskDelay(pdMS_TO_TICKS(BAT_REPORTING_MIN_SEC * 1000));
+  }
+  ESP_LOGI(TAG, "Battery reporting ended");
+  vTaskDelete(NULL);
+}
+
 void shared_start() {
   ESP_LOGI(TAG, "Shared Start...");
+  s_zb_events = xEventGroupCreate();
   gpio_config_t cfg = {
     .pin_bit_mask = 1ULL << PIN_LED,
     .mode = GPIO_MODE_OUTPUT,
@@ -78,4 +207,20 @@ esp_err_t adc_read_avg(const adc_channel_t ch, int* out) {
 
 void on_joined() {
   set_led(false);
+  set_joined(true);
+  set_joining(false);
+  if (get_cfg_flag(CFG_FLAG_RESET)) {
+    set_cfg_flag(CFG_FLAG_RESET, false);
+    cfg_save();
+  }
+  pm_release_after_ms(120000);
+  xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
+  xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
+}
+
+void on_left() {
+  set_led(true);
+  set_joined(false);
+  set_joining(false);
+  set_ready(false);
 }

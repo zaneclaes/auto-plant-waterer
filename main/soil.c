@@ -137,7 +137,7 @@ void soil_disable() {
   gpio_set_level(PIN_SOIL_ON, 0);
 }
 
-const struct SoilLevel* soil_get_level(uint8_t idx) {
+const struct SoilLevel* update_soil_level(uint8_t idx) {
   esp_err_t err = adc_read_avg(idx, &levels[idx].raw);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Failed to read soil: %s", esp_err_to_name(err));
@@ -155,3 +155,5 @@ const struct SoilLevel* soil_get_level(uint8_t idx) {
 
   return &levels[idx];
 }
+
+const struct SoilLevel* get_soil_level(uint8_t idx) { return &levels[idx]; }

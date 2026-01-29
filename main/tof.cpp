@@ -50,11 +50,11 @@ esp_err_t tof_start(void) {
   //
   ESP_LOGI(TAG, "VL53L0X started");
   // set_cfg_flag(CFG_FLAG_TOF, true);
-  tof_update();
+  update_water_level();
   return ESP_OK;
 }
 
-const struct WaterLevel* tof_update(void) {
+const struct WaterLevel* update_water_level(void) {
   if (!get_cfg_flag(CFG_FLAG_TOF)) {
     ESP_LOGW(TAG, "ToF not configured");
     return &water_level;
@@ -84,3 +84,5 @@ const struct WaterLevel* tof_update(void) {
   ESP_LOGI(TAG, "Water level: %u mm -> %u%%", (unsigned)water_level.mm, (unsigned)water_level.percent);
   return &water_level;
 }
+
+const struct WaterLevel* get_water_level(void) { return &water_level; }

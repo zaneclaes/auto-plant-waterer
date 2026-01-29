@@ -36,7 +36,7 @@ void battery_start(void){
   if (err != ESP_OK) {
     adc_cali_handle = NULL;
   }
-  battery_update();
+  update_battery();
 }
 
 void enable_power_management(void) {
@@ -61,9 +61,11 @@ static uint8_t battery_pct_from_voltage(float v) {
   return (uint8_t)((v - VOLTAGE_MIN) / (VOLTAGE_MAX - VOLTAGE_MIN) * 100.0f);
 }
 
-const struct BatteryLevel* battery_update(void) {
+const struct BatteryLevel* update_battery(void) {
   battery_level.voltage = read_battery_voltage();
   battery_level.percent = battery_pct_from_voltage(battery_level.voltage);
   ESP_LOGI(TAG, "Bat %d%% (%fv)", battery_level.percent, battery_level.voltage);
   return &battery_level;
 }
+
+const struct BatteryLevel* get_battery(void) { return &battery_level; }

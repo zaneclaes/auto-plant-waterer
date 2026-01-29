@@ -22,6 +22,8 @@ struct SoilLevel {
 void soil_start(void);
 void soil_enable(); // power-up the GPIO so soil can be read
 void soil_disable(); // power-down to conserve power
-const struct SoilLevel* soil_get_level(uint8_t idx);
+
+const struct SoilLevel* update_soil_level(uint8_t idx);
+const struct SoilLevel* get_soil_level(uint8_t idx);
 
 #endif //AUTO_PLANT_WATERER_SOIL_H

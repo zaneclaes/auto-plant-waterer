@@ -13,6 +13,13 @@ extern "C" {
 #include "rom/secure_boot.h"
 
 #define DEF_NUM_ZONES         3 // How many pumps/soil sensors?
+#define DO_RESET              false
+
+#define DEF_REPORTING_MIN_SEC   (60)
+#define DEF_REPORTING_MAX_SEC   (60 * 10)
+
+#define BAT_REPORTING_MIN_SEC   (60 * 5)
+#define BAT_REPORTING_MAX_SEC   (60 * 60)
 
 #define ZB_MANUFACTURER_NAME "\x0b" "inZania LLC"
 #define ZB_MODEL_IDENTIFIER  "\x13" "Auto Plant Waterer"
@@ -27,7 +34,8 @@ extern "C" {
 #define KEY_NUM_ZONES       "num_zones"
 
 typedef enum {
-  CFG_FLAG_TOF   = (1U << 0),
+  CFG_FLAG_RESET = (1U << 0),
+  CFG_FLAG_TOF   = (1U << 1),
 } cfg_flag_t;
 
 // AP defaults (if nothing saved)

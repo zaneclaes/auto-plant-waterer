@@ -34,17 +34,11 @@ static const char *TAG = "zb";
 #define COORDINATOR_SHORT_ADDR 0x0000
 #define COORDINATOR_ENDPOINT   1   // Z2M coordinator endpoint is typically 1
 
-#define MIN_REPORTING_SEC   10
-#define MAX_REPORTING_SEC   600
-
-#define BAT_REPORTING_SEC   60 // * 30
-
 #define EP_WATER      0x01
 #define EP_SOIL1      0x02
 #define EP_SOIL2      0x03
 #define EP_SOIL3      0x04
 
-/* Custom cluster for water level (must be >= ESP_ZB_CUSTOM_CLUSTER_ID_MIN_VAL) */
 #define WATER_CLUSTER_ID              0xFF01
 #define WATER_ATTR_WATER_LEVEL_MM_ID  0x0000
 
@@ -52,78 +46,26 @@ static const char *TAG = "zb";
  * INTERNALS
  * ----------------------------- */
 
-static EventGroupHandle_t s_zb_events;
-#define ZB_JOINED_BIT  BIT0
-#define ZB_JOINING_BIT  BIT1
-
 static char s_zb_mac_addr[20];
 
+static uint16_t s_immediate_water_level_change_report = 500; // if any water/soil level changes more than pct, report immediately
 static uint16_t s_water_level_pct_x100 = 0; // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0; // 0.00%
 static uint16_t s_rh_max_x100 = 10000; // 100.00%
 
 static uint16_t s_soil_level_pct_x100[3] = { 0, 0, 0 };
 
+static uint8_t battery_pct_reportable_change = 1; // 1% (0.5% units)
+static uint8_t battery_v_reportable_change   = 1; // 0.1V (100mV units)
 static uint8_t s_battery_voltage = 0;
 static uint8_t s_battery_percent = 0;
-
-static void zigbee_task(void *pv);
-static void report_task(void *pv);
-
-static inline bool zb_is_joined(void) {
-  return (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0;
-}
-static inline bool zb_is_commissioning(void) {
-  return (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0;
-}
-/* -----------------------------
- * LOCK; prevent power management while joining...
- * ----------------------------- */
-
-static esp_pm_lock_handle_t s_pm_no_ls_lock;
-static esp_pm_lock_handle_t s_pm_cpu_max_lock;
-static esp_timer_handle_t s_release_timer;
-
-static void pm_lock_hold_for_join(void) {
-  ESP_LOGI(TAG, "Pausing power management...");
-  if (!s_pm_no_ls_lock) {
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "zb_join", &s_pm_no_ls_lock));
-  }
-  if (!s_pm_cpu_max_lock) {
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "zb_join_cpu", &s_pm_cpu_max_lock));
-  }
-  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_no_ls_lock));
-  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
-}
-
-static void pm_lock_release_after_join(void *arg) {
-  if (s_pm_no_ls_lock) {
-    ESP_LOGI(TAG, "Resuming power management...");
-    esp_pm_lock_release(s_pm_no_ls_lock);
-  }
-  if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
-}
-
-static void start_release_timer_ms(uint32_t ms) {
-  if (!s_release_timer) {
-    const esp_timer_create_args_t targs = {
-      .callback = &pm_lock_release_after_join,
-      .name = "zb_release_ls",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_release_timer));
-  }
-
-  ESP_LOGI(TAG, "Starting power management timer...");
-  esp_timer_stop(s_release_timer);
-  ESP_ERROR_CHECK(esp_timer_start_once(s_release_timer, (uint64_t)ms * 1000ULL));
-}
 
 /* -----------------------------
  * Helpers
  * ----------------------------- */
 
-static void zb_update_battery(void) {
-  const struct BatteryLevel* bat = battery_update();
+static void zb_get_battery(void) {
+  const struct BatteryLevel* bat = get_battery();
   s_battery_percent = bat->percent * 2;
   s_battery_voltage = (uint8_t)(bat->voltage * 10.0f);
 }
@@ -149,17 +91,10 @@ static uint8_t get_soil_level_idx(uint8_t ep) {
  * I2C / ToF (stub)
  * ----------------------------- */
 
-static uint16_t s_immediate_water_level_change_report = 1000; // if any water/soil level changes more than 10%, report immediately
-static uint8_t battery_pct_reportable_change = 2; // 1% (0.5% units)
-static uint8_t battery_v_reportable_change   = 1; // 0.1V (100mV units)
-
 static void water_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
   esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *) user_ctx;
 
   if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
-    ESP_LOGI(TAG, "Bind OK: humidity reports from ep %d to coordinator ep %d",
-             bind_req->src_endp, bind_req->dst_endp);
-
     esp_zb_zcl_config_report_cmd_t report_cmd = {0};
 
     report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address(); // local config
@@ -173,8 +108,8 @@ static void water_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) 
       .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
       .attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
       .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
-      .min_interval = MIN_REPORTING_SEC,
-      .max_interval = MAX_REPORTING_SEC,
+      .min_interval = DEF_REPORTING_MIN_SEC,
+      .max_interval = DEF_REPORTING_MAX_SEC,
       .reportable_change = &s_immediate_water_level_change_report,
     };
 
@@ -185,7 +120,7 @@ static void water_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) 
     esp_zb_zcl_config_report_cmd_req(&report_cmd);
     esp_zb_lock_release();
 
-    ESP_LOGI(TAG, "Water level reporting configured");
+    ESP_LOGI(TAG, "Water level reporting configured (humidity from ep %d)", bind_req->src_endp);
   } else {
     ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
   }
@@ -212,9 +147,6 @@ static void soil_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
   esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *) user_ctx;
 
   if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
-    ESP_LOGI(TAG, "Bind OK: humidity reports from ep %d to coordinator ep %d",
-             bind_req->src_endp, bind_req->dst_endp);
-
     esp_zb_zcl_config_report_cmd_t report_cmd = {0};
 
     report_cmd.zcl_basic_cmd.dst_addr_u.addr_short = esp_zb_get_short_address();
@@ -228,8 +160,8 @@ static void soil_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
       .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
       .attributeID = ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
       .attrType = ESP_ZB_ZCL_ATTR_TYPE_U16,
-      .min_interval = MIN_REPORTING_SEC,
-      .max_interval = MAX_REPORTING_SEC,
+      .min_interval = DEF_REPORTING_MIN_SEC,
+      .max_interval = DEF_REPORTING_MAX_SEC,
       .reportable_change = &s_immediate_water_level_change_report,
     };
 
@@ -240,7 +172,7 @@ static void soil_level_bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx) {
     esp_zb_zcl_config_report_cmd_req(&report_cmd);
     esp_zb_lock_release();
 
-    ESP_LOGI(TAG, "Soil level reporting configured");
+    ESP_LOGI(TAG, "Soil level reporting configured (humidity from ep %d)", bind_req->src_endp);
   } else {
     ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
   }
@@ -267,9 +199,6 @@ static void bind_battery_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx){
   esp_zb_zdo_bind_req_param_t *bind_req = (esp_zb_zdo_bind_req_param_t *)user_ctx;
 
   if (zdo_status == ESP_ZB_ZDP_STATUS_SUCCESS) {
-    ESP_LOGI(TAG, "Bind OK: battery reports from ep %d to coordinator ep %d",
-             bind_req->src_endp, bind_req->dst_endp);
-
     esp_zb_zcl_config_report_cmd_t cmd = {0};
 
     cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
@@ -283,18 +212,18 @@ static void bind_battery_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx){
         .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
         .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
         .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-        .min_interval = BAT_REPORTING_SEC,
-        .max_interval = 60 * 60,
+        .min_interval = BAT_REPORTING_MIN_SEC,
+        .max_interval = BAT_REPORTING_MAX_SEC,
         .reportable_change = &battery_pct_reportable_change,
     },
     {
       .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
       .attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
       .attrType = ESP_ZB_ZCL_ATTR_TYPE_U8,
-      .min_interval = BAT_REPORTING_SEC,
-      .max_interval = 60 * 60,
+      .min_interval = BAT_REPORTING_MIN_SEC,
+      .max_interval = BAT_REPORTING_MAX_SEC,
       .reportable_change = &battery_v_reportable_change,
-  }
+    }
     };
 
     cmd.record_number = 2;
@@ -303,6 +232,9 @@ static void bind_battery_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx){
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_config_report_cmd_req(&cmd);
     esp_zb_lock_release();
+
+    ESP_LOGI(TAG, "Bind OK: battery reports from ep %d to coordinator ep %d",
+             bind_req->src_endp, bind_req->dst_endp);
   } else {
     ESP_LOGW(TAG, "Bind failed: zdo_status=%d", zdo_status);
   }
@@ -329,8 +261,6 @@ static void battery_bind_to_coordinator() {
 static void on_zb_joined() {
   ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx, MAC: %s)",
            esp_zb_get_pan_id(), esp_zb_get_short_address(), s_zb_mac_addr);
-  xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
-  xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
   on_joined();
   water_level_bind_to_coordinator();
   battery_bind_to_coordinator();
@@ -338,7 +268,6 @@ static void on_zb_joined() {
   for (uint8_t i = 0; i < num_zones; i++) {
     soil_level_bind_to_coordinator(i);
   }
-  start_release_timer_ms(120000);
 }
 
 /* -----------------------------
@@ -401,7 +330,7 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
   esp_zb_cluster_list_add_humidity_meas_cluster(cluster_list, rh, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
   if (ep == EP_WATER) {
-    zb_update_battery();
+    zb_get_battery();
     esp_zb_attribute_list_t *pwr =
       esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
 
@@ -444,7 +373,7 @@ static void zb_load_mac_addr() {
 
 static bool zb_check_joined() {
   uint16_t short_addr = esp_zb_get_short_address();
-  if (short_addr != 0xFFFF && short_addr != 0x0000) {
+  if (short_addr != 0xFFFF && short_addr != 0xFFFE && short_addr != 0x0000) {
     on_zb_joined();
     return true;
   }
@@ -452,11 +381,11 @@ static bool zb_check_joined() {
 }
 
 static void zb_join(uint8_t param) {
-  if (zb_is_joined()) {
+  if (is_joined()) {
     ESP_LOGI(TAG, "Skipping join (already joined)");
     return;
   }
-  if (zb_is_commissioning()) {
+  if (is_joining()) {
     ESP_LOGI(TAG, "Skipping join (already trying to join)");
     return;
   }
@@ -466,7 +395,7 @@ static void zb_join(uint8_t param) {
   }
   ESP_LOGI(TAG, "Attempting to join...");
   (void) param;
-  xEventGroupSetBits(s_zb_events, ZB_JOINING_BIT);
+  set_joining(true);
   esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
 }
 
@@ -503,7 +432,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
     }
 
     case ESP_ZB_BDB_SIGNAL_STEERING:
-      xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+      set_joining(false);
       if (status == ESP_OK) {
         on_zb_joined();
       } else {
@@ -513,16 +442,23 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
       break;
 
     case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
-      if (zb_is_joined() && !zb_is_commissioning()) {
+      if (is_joined() && is_ready()) {
         // ESP_LOGI(TAG, "Zigbee sleeping...?");
         esp_zb_sleep_now();
       }
       break;
 
+    case ESP_ZB_NLME_STATUS_INDICATION: {
+      if (status == ESP_OK) {
+        ESP_LOGI(TAG, "Zigbee joining...");
+      } else {
+        ESP_LOGW(TAG, "Zigbee negative join status! %s", esp_err_to_name(status));
+      }
+    } break;
+
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
       ESP_LOGW(TAG, "Left network; will rejoin shortly.");
-      xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
-      xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+      on_left();
       esp_zb_scheduler_alarm(zb_join, 0, 1000);
       break;
 
@@ -555,7 +491,7 @@ static void zigbee_task(void *pv) {
     .install_code_policy = false,
     .nwk_cfg.zed_cfg = {
       .ed_timeout = ESP_ZB_ED_AGING_TIMEOUT_1024MIN,
-      .keep_alive = MIN_REPORTING_SEC * 1000,
+      .keep_alive = DEF_REPORTING_MIN_SEC * 1000,
     },
   };
 
@@ -591,112 +527,71 @@ static void zigbee_task(void *pv) {
   }
 
   esp_zb_device_register(ep_list);
-
-  // esp_zb_nvram_erase_at_start(true); // erase NVRAM
+  esp_zb_nvram_erase_at_start(get_cfg_flag(CFG_FLAG_RESET));
   esp_zb_start(false);
   esp_zb_stack_main_loop();
   vTaskDelete(NULL);
 }
 
 /* -----------------------------
- * ToF task: update Zigbee attribute
+ * Start & Report Public Interface
  * ----------------------------- */
 
-static void timed_water(uint8_t idx, uint16_t sec) {
-  ESP_LOGI(TAG, "Watering #%u (at %u%%) for %u seconds...", idx, s_soil_level_pct_x100[idx], sec);
-  pump_set(idx, true);
-  vTaskDelay(pdMS_TO_TICKS(sec * 1000));
-  pump_set(idx, false);
-}
+void zb_report_sensors() {
+  uint8_t num_zones = get_num_zones();
+  const struct WaterLevel* wl = get_water_level();
+  s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
+  for (uint8_t i = 0; i < num_zones; i++) {
+    const struct SoilLevel* sl = get_soil_level(i);
+    s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
+  }
 
-static void report_task(void *pv) {
-  /* Wait until joined before reporting/updating attributes */
-  xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-  while (true) {
-    uint8_t num_zones = get_num_zones();
-    // Update all values into local memory first
-    const struct WaterLevel* wl = tof_update();
-    s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
-    soil_enable();
-    for (uint8_t i = 0; i < num_zones; i++) {
-      const struct SoilLevel* sl = soil_get_level(i);
-      s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
-    }
-    soil_disable();
-
-    for (uint8_t i = 0; i < num_zones; i++) {
-      if (s_soil_level_pct_x100[i] < 1000) {
-        timed_water(i, 10);
-      }
-    }
-
-    // Lock once and send all updates to Zigbee
-    esp_zb_lock_acquire(portMAX_DELAY);
+  esp_zb_lock_acquire(portMAX_DELAY);
+  esp_zb_zcl_set_attribute_val(
+    EP_WATER,
+    ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+    ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+    &s_water_level_pct_x100,
+    false
+  );
+  for (uint8_t i = 0; i < num_zones; i++) {
     esp_zb_zcl_set_attribute_val(
-      EP_WATER,
+      get_soil_level_endpoint(i),
       ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
       ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-      &s_water_level_pct_x100,
+      &s_soil_level_pct_x100[i],
       false
     );
-    for (uint8_t i = 0; i < num_zones; i++) {
-      esp_zb_zcl_set_attribute_val(
-        get_soil_level_endpoint(i),
-        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-        &s_soil_level_pct_x100[i],
-        false
+  }
+  esp_zb_lock_release();
+}
+
+void zb_report_battery() {
+  zb_get_battery();
+  esp_zb_lock_acquire(portMAX_DELAY);
+  esp_zb_zcl_set_attribute_val(
+      EP_WATER,
+      ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+      ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+      &s_battery_voltage,
+      false
       );
-    }
-    esp_zb_lock_release();
-
-    vTaskDelay(pdMS_TO_TICKS(MIN_REPORTING_SEC * 1000));
-  }
+  esp_zb_zcl_set_attribute_val(
+      EP_WATER,
+      ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+      ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+      &s_battery_percent,
+      false
+  );
+  esp_zb_lock_release();
 }
-
-static void battery_task(void* pv){
-  xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-  while (true) {
-    zb_update_battery();
-
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_set_attribute_val(
-        EP_WATER,
-        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
-        &s_battery_voltage,
-        false
-        );
-    esp_zb_zcl_set_attribute_val(
-        EP_WATER,
-        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
-        &s_battery_percent,
-        false
-    );
-    esp_zb_lock_release();
-
-    vTaskDelay(pdMS_TO_TICKS(BAT_REPORTING_SEC * 1000));
-  }
-}
-
-/* -----------------------------
- * app_main
- * ----------------------------- */
 
 void zb_start(void) {
   zb_load_mac_addr();
-  vTaskDelay(pdMS_TO_TICKS(500));   // unknown race condition... required for steering.
-
-  pm_lock_hold_for_join();
-  s_zb_events = xEventGroupCreate();
+  vTaskDelay(pdMS_TO_TICKS(1000));
   xTaskCreate(zigbee_task, "zigbee_task", 0x2000, NULL, 5, NULL);
-  xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
-  xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
 }

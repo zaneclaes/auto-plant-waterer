@@ -28,7 +28,8 @@ struct WaterLevel {
 };
 
 esp_err_t tof_start(void);
-const struct WaterLevel* tof_update(void);
+const struct WaterLevel* update_water_level(void);
+const struct WaterLevel* get_water_level(void);
 
 #ifdef __cplusplus
 }

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define VOLTAGE_MIN 3.3f
-#define VOLTAGE_MAX 4.2f
+#define VOLTAGE_MAX 4.1f
 
 #define PIN_BAT             (GPIO_NUM_5) // MTDI (on back)
 
@@ -19,6 +19,8 @@ struct BatteryLevel {
 
 void battery_start(void);
 void enable_power_management(void);
-const struct BatteryLevel* battery_update(void);
+
+const struct BatteryLevel* update_battery(void);
+const struct BatteryLevel* get_battery(void);
 
 #endif //AUTO_PLANT_WATERER_BAT_H

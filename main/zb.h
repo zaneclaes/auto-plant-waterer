@@ -7,4 +7,7 @@
 
 void zb_start(void);
 
+void zb_report_sensors();
+void zb_report_battery();
+
 #endif //AUTO_PLANT_WATERER_ZB_H
