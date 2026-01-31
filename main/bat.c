@@ -41,9 +41,11 @@ void battery_start(void){
 
 void enable_power_management(void) {
   esp_pm_config_t pm = {
-    .max_freq_mhz = 80,
-    .min_freq_mhz = 10,
-    .light_sleep_enable = true,
+    .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, //80,
+    .min_freq_mhz = 40,
+// #if CONFIG_FREERTOS_USE_TICKLESS_IDLE
+    .light_sleep_enable = true
+// #endif
   };
   ESP_ERROR_CHECK(esp_pm_configure(&pm));
 }

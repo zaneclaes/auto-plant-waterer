@@ -19,6 +19,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 static const char *TAG = "coord";
 
@@ -29,6 +30,16 @@ static adc_oneshot_unit_handle_t adc_handle;
 void set_led(bool on) {
   gpio_set_level(PIN_LED, on ? 0 : 1);
 }
+void dump_timers_once(void) {
+  esp_timer_dump(stdout);
+}
+void dump_tasks_once(void) {
+  // Enable CONFIG_FREERTOS_USE_TRACE_FACILITY and CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS if you want more detail
+  char buf[2048];
+  vTaskList(buf);
+  // Print it once, then stop (one print won’t ruin everything)
+  printf("Task          State Prio Stack Num\n%s\n", buf);
+}
 
 /* -----------------------------
  * Events / signaling for joining
@@ -38,10 +49,12 @@ static EventGroupHandle_t s_zb_events;
 #define ZB_JOINED_BIT     BIT0
 #define ZB_JOINING_BIT    BIT1
 #define ZB_READY_BIT      BIT2
+#define ZB_REPORTING_BIT  BIT3
 
 bool is_joined(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0; }
 bool is_joining(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0; }
 bool is_ready(void) { return (xEventGroupGetBits(s_zb_events) & ZB_READY_BIT) != 0; }
+bool is_reporting(void) { return (xEventGroupGetBits(s_zb_events) & ZB_REPORTING_BIT) != 0; }
 
 void set_joined(bool joined) {
   if (joined) xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
@@ -54,7 +67,10 @@ void set_joining(bool joining) {
 }
 
 void set_ready(bool ready) {
-  if (ready) xEventGroupSetBits(s_zb_events, ZB_READY_BIT);
+  if (ready) {
+    xEventGroupSetBits(s_zb_events, ZB_READY_BIT);
+    zb_on_ready();
+  }
   else xEventGroupClearBits(s_zb_events, ZB_READY_BIT);
 }
 
@@ -82,16 +98,20 @@ void pm_lock(void) {
   ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
 }
 
-static void pm_lock_release_after_join(void *arg) {
-  if (!is_joined()) {
-    ESP_LOGW(TAG, "Power management timer hit, but not joined");
-    return;
-  }
+static void pm_lock_release(void) {
   if (s_pm_no_ls_lock) {
     ESP_LOGI(TAG, "Resuming power management...");
     esp_pm_lock_release(s_pm_no_ls_lock);
   }
   if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
+}
+
+static void pm_lock_release_after_join(void *arg) {
+  if (!is_joined()) {
+    ESP_LOGW(TAG, "Power management timer hit, but not joined");
+    return;
+  }
+  pm_lock_release();
   set_ready(true);
 }
 
@@ -119,7 +139,13 @@ static void timed_water(uint8_t idx, uint16_t sec) {
 
 
 static void report_task(void *pv) {
+  ESP_LOGI(TAG, "Starting reporting...");
+  uint32_t sec_since_bat = 0;
   while (is_joined()) {
+    bool ready = is_ready();
+    // xEventGroupSetBits(s_zb_events, ZB_REPORTING_BIT);
+    // if (ready)  pm_lock();
+
     uint8_t num_zones = get_num_zones();
     update_water_level();
     soil_enable();
@@ -136,21 +162,32 @@ static void report_task(void *pv) {
     }
 
     zb_report_sensors();
+    if (!ready || sec_since_bat > BAT_REPORTING_MIN_SEC) {
+      update_battery();
+      zb_report_battery();
+      sec_since_bat = 0;
+    }
+    // if (ready) {
+    //   vTaskDelay(pdMS_TO_TICKS(1000));
+    //   pm_lock_release();
+    // }
+    // xEventGroupClearBits(s_zb_events, ZB_REPORTING_BIT);
     vTaskDelay(pdMS_TO_TICKS(DEF_REPORTING_MIN_SEC * 1000));
+    sec_since_bat += DEF_REPORTING_MIN_SEC;
   }
   ESP_LOGI(TAG, "Reporting ended");
   vTaskDelete(NULL);
 }
 
-static void battery_task(void* pv){
-  while (is_joined()) {
-    update_battery();
-    zb_report_battery();
-    vTaskDelay(pdMS_TO_TICKS(BAT_REPORTING_MIN_SEC * 1000));
-  }
-  ESP_LOGI(TAG, "Battery reporting ended");
-  vTaskDelete(NULL);
-}
+// static void battery_task(void* pv){
+//   while (is_joined()) {
+//     update_battery();
+//     zb_report_battery();
+//     vTaskDelay(pdMS_TO_TICKS(BAT_REPORTING_MIN_SEC * 1000));
+//   }
+//   ESP_LOGI(TAG, "Battery reporting ended");
+//   vTaskDelete(NULL);
+// }
 
 void shared_start() {
   ESP_LOGI(TAG, "Shared Start...");
@@ -165,11 +202,11 @@ void shared_start() {
   ESP_ERROR_CHECK(gpio_config(&cfg));
   set_led(true);
 
-  adc_oneshot_unit_init_cfg_t init_cfg = {
-    .unit_id = SHARED_ADC_UNIT,
-    .ulp_mode = ADC_ULP_MODE_DISABLE,
-  };
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+  // adc_oneshot_unit_init_cfg_t init_cfg = {
+  //   .unit_id = SHARED_ADC_UNIT,
+  //   .ulp_mode = ADC_ULP_MODE_DISABLE,
+  // };
+  // ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
 }
 
 adc_channel_t adc_start(int pin) {
@@ -206,21 +243,21 @@ esp_err_t adc_read_avg(const adc_channel_t ch, int* out) {
 }
 
 void on_joined() {
-  set_led(false);
-  set_joined(true);
-  set_joining(false);
   if (get_cfg_flag(CFG_FLAG_RESET)) {
     set_cfg_flag(CFG_FLAG_RESET, false);
     cfg_save();
   }
-  pm_release_after_ms(120000);
-  xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
-  xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
+  pm_release_after_ms(30000);
+  set_joined(true);
+  set_joining(false);
+  // xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
+  set_led(false);
+  // xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
 }
 
 void on_left() {
-  set_led(true);
   set_joined(false);
   set_joining(false);
   set_ready(false);
+  set_led(true);
 }

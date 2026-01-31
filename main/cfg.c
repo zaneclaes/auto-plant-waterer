@@ -9,13 +9,17 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_random.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "nwk/esp_zigbee_nwk.h"
 
 static const char *TAG = "cfg";
 
 static uint32_t s_flags = 0;
 static uint8_t s_num_zones = DEF_NUM_ZONES;
+
+static char s_mac_addr[20];
 
 static esp_err_t nvs_get_str_or_empty(nvs_handle_t h, const char *key, char *out, size_t out_sz) {
   size_t needed = 0;
@@ -144,5 +148,38 @@ void cfg_start() {
     ESP_LOGW(TAG, "Build includes DO_RESET flag; will always reset!");
   }
 
+  if (DEV_MODE) {
+    uint64_t ieee;
+    err = nvs_get_u64(h, KEY_MAC, &ieee);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+      esp_fill_random(&ieee, sizeof(ieee));
+      ieee |= 0x0200000000000000ULL;
+      nvs_set_u64(h, KEY_MAC, ieee);
+    } else {
+      ESP_ERROR_CHECK(err);
+    }
+    esp_zb_set_long_address((uint8_t *)&ieee);
+    sprintf(
+    s_mac_addr,
+    "0x%02x%02x%02x%02x%02x%02x%02x%02x",
+    (uint8_t)((ieee >> 56) & 0xFF),
+    (uint8_t)((ieee >> 48) & 0xFF),
+    (uint8_t)((ieee >> 40) & 0xFF),
+    (uint8_t)((ieee >> 32) & 0xFF),
+    (uint8_t)((ieee >> 24) & 0xFF),
+    (uint8_t)((ieee >> 16) & 0xFF),
+    (uint8_t)((ieee >> 8)  & 0xFF),
+    (uint8_t)( ieee        & 0xFF)
+);
+  } else {
+    uint8_t ieee[8] = {0};
+    ESP_ERROR_CHECK(esp_read_mac(ieee, ESP_MAC_IEEE802154));
+    sprintf(s_mac_addr, "0x%02x%02x%02x%02x%02x%02x%02x%02x",
+      ieee[0], ieee[1], ieee[2], ieee[3], ieee[4], ieee[5], ieee[6], ieee[7]);
+  }
+  ESP_LOGI(TAG, "MAC Addr %s", s_mac_addr);
+
   nvs_close(h);
 }
+
+const char* get_mac_addr() { return s_mac_addr; }

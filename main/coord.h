@@ -21,6 +21,7 @@ void pm_release_after_ms(uint32_t ms);
 bool is_joined(void);
 bool is_joining(void);
 bool is_ready(void);
+bool is_reporting(void);
 void set_joined(bool joined);
 void set_joining(bool joining);
 void wait_for_join(void);

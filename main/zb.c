@@ -46,8 +46,6 @@ static const char *TAG = "zb";
  * INTERNALS
  * ----------------------------- */
 
-static char s_zb_mac_addr[20];
-
 static uint16_t s_immediate_water_level_change_report = 500; // if any water/soil level changes more than pct, report immediately
 static uint16_t s_water_level_pct_x100 = 0; // 0..10000  (0.01% units)
 static uint16_t s_rh_min_x100 = 0; // 0.00%
@@ -55,7 +53,7 @@ static uint16_t s_rh_max_x100 = 10000; // 100.00%
 
 static uint16_t s_soil_level_pct_x100[3] = { 0, 0, 0 };
 
-static uint8_t battery_pct_reportable_change = 1; // 1% (0.5% units)
+static uint8_t battery_pct_reportable_change = 2; // 1% (0.5% units)
 static uint8_t battery_v_reportable_change   = 1; // 0.1V (100mV units)
 static uint8_t s_battery_voltage = 0;
 static uint8_t s_battery_percent = 0;
@@ -248,7 +246,7 @@ static void battery_bind_to_coordinator() {
 
   bind_req->req_dst_addr = esp_zb_get_short_address(); // local device
   bind_req->src_endp     = EP_WATER;
-  bind_req->dst_endp     = 1; // coordinator endpoint
+  bind_req->dst_endp =    COORDINATOR_ENDPOINT;
   bind_req->cluster_id   = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
   bind_req->dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
 
@@ -259,8 +257,12 @@ static void battery_bind_to_coordinator() {
 }
 
 static void on_zb_joined() {
+  if (is_joined()) {
+    ESP_LOGI(TAG, "double-join (skipping re-bind)");
+    return;
+  }
   ESP_LOGI(TAG, "Joined network OK (PAN: 0x%04hx, short: 0x%04hx, MAC: %s)",
-           esp_zb_get_pan_id(), esp_zb_get_short_address(), s_zb_mac_addr);
+           esp_zb_get_pan_id(), esp_zb_get_short_address(), get_mac_addr());
   on_joined();
   water_level_bind_to_coordinator();
   battery_bind_to_coordinator();
@@ -268,6 +270,14 @@ static void on_zb_joined() {
   for (uint8_t i = 0; i < num_zones; i++) {
     soil_level_bind_to_coordinator(i);
   }
+  zb_report_battery();
+}
+
+void zb_on_ready() {
+  ESP_LOGI(TAG, "Enabling sleep...");
+  // esp_zb_sleep_set_threshold(200);
+  // esp_zb_sleep_enable(true);
+  // esp_zb_set_rx_on_when_idle(false);
 }
 
 /* -----------------------------
@@ -331,9 +341,13 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
 
   if (ep == EP_WATER) {
     zb_get_battery();
-    esp_zb_attribute_list_t *pwr =
-      esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+    // esp_zb_attribute_list_t *pwr =
+    //   esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG);
+    //
+    esp_zb_power_config_cluster_cfg_t pwr_cfg = {0};
+    esp_zb_attribute_list_t *pwr = esp_zb_power_config_cluster_create(&pwr_cfg);
 
+    // Then add just the attributes you actually support.
     esp_zb_custom_cluster_add_custom_attr(
         pwr,
         ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
@@ -359,19 +373,8 @@ static esp_zb_cluster_list_t *create_water_level_clusters(uint8_t ep) {
 /* -----------------------------
  * Zigbee: signal handler (commissioning / join)
 * ----------------------------- */
-static void zb_load_mac_addr() {
-  // esp_zb_ieee_addr_t ieee;              // 8 bytes
-  // esp_zb_get_long_address(ieee);        // fills in little-endian bytes :contentReference[oaicite:0]{index=0}
-
-  uint8_t ieee[8] = {0};
-  ESP_ERROR_CHECK(esp_read_mac(ieee, ESP_MAC_IEEE802154));
-
-  sprintf(s_zb_mac_addr, "0x%02x%02x%02x%02x%02x%02x%02x%02x",
-    ieee[0], ieee[1], ieee[2], ieee[3], ieee[4], ieee[5], ieee[6], ieee[7]);
-  ESP_LOGI(TAG, "Zigbee HW Addr %s", s_zb_mac_addr);
-}
-
 static bool zb_check_joined() {
+  if (esp_zb_bdb_is_factory_new()) return false;
   uint16_t short_addr = esp_zb_get_short_address();
   if (short_addr != 0xFFFF && short_addr != 0xFFFE && short_addr != 0x0000) {
     on_zb_joined();
@@ -390,13 +393,40 @@ static void zb_join(uint8_t param) {
     return;
   }
   if (zb_check_joined()) {
-    ESP_LOGI(TAG, "Watchdog: looks joined, skipping");
+    ESP_LOGI(TAG, "Watchdog: looks joined (short 0x%04hx), skipping", esp_zb_get_short_address());
     return;
   }
   ESP_LOGI(TAG, "Attempting to join...");
   (void) param;
   set_joining(true);
+  esp_zb_sleep_enable(true);
+  esp_zb_set_rx_on_when_idle(false);
   esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+}
+
+static uint32_t s_join_backoff = 15000;
+void zb_join_backoff(uint32_t ms) {
+  if (ms == 0) {
+    s_join_backoff *= 2;
+    if (s_join_backoff > 90000) s_join_backoff = 90000;
+  } else {
+    s_join_backoff = ms;
+  }
+  ESP_LOGI(TAG, "Joining again in %dms...", s_join_backoff);
+  esp_zb_scheduler_alarm(zb_join, 0, s_join_backoff);
+}
+
+bool rtos0_active_snapshot(void) {
+  char *buf = NULL;
+  size_t len = 0;
+  FILE *f = open_memstream(&buf, &len);
+
+  esp_pm_dump_locks(f);
+  fclose(f);
+
+  bool active = strstr(buf, "rtos0") && strstr(buf, "1");
+  free(buf);
+  return active;
 }
 
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
@@ -409,7 +439,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
 
   switch (sig) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-      ESP_LOGI(TAG, "Zigbee stack initialized for MAC %s", s_zb_mac_addr);
+      ESP_LOGI(TAG, "Zigbee stack initialized for MAC %s", get_mac_addr());
       esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
       break;
 
@@ -423,10 +453,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
 
       if (factory_new) {
         ESP_LOGI(TAG, "Factory new -> steering");
-        zb_join(0);
+        zb_join_backoff(1500);
       } else if (!zb_check_joined()) {
         ESP_LOGI(TAG, "Not factory new -> wait for rejoin; start watchdog");
-        esp_zb_scheduler_alarm(zb_join, 0, 30000);
+        zb_join_backoff(30000);
       }
       break;
     }
@@ -436,21 +466,23 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
       if (status == ESP_OK) {
         on_zb_joined();
       } else {
-        ESP_LOGW(TAG, "Steering failed (%s). Retrying...", esp_err_to_name(status));
-        esp_zb_scheduler_alarm(zb_join, 0, 3000);
+        ESP_LOGW(TAG, "Steering failed: status=%s short=0x%04x",
+        esp_err_to_name(status), esp_zb_get_short_address());
+        zb_join_backoff(0);
       }
       break;
 
     case ESP_ZB_COMMON_SIGNAL_CAN_SLEEP:
-      if (is_joined() && is_ready()) {
-        // ESP_LOGI(TAG, "Zigbee sleeping...?");
-        esp_zb_sleep_now();
-      }
+        if (is_joined() && is_ready() && !is_reporting()) {
+          // ESP_LOGI(TAG, "Zigbee sleeping...?");
+          // set_led(rtos0_active_snapshot());
+          esp_zb_sleep_now();
+        }
       break;
 
     case ESP_ZB_NLME_STATUS_INDICATION: {
       if (status == ESP_OK) {
-        ESP_LOGI(TAG, "Zigbee joining...");
+        ESP_LOGI(TAG, "Zigbee status indication OK (joined?)");
       } else {
         ESP_LOGW(TAG, "Zigbee negative join status! %s", esp_err_to_name(status));
       }
@@ -459,7 +491,27 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_s) {
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
       ESP_LOGW(TAG, "Left network; will rejoin shortly.");
       on_left();
-      esp_zb_scheduler_alarm(zb_join, 0, 1000);
+      zb_join_backoff(5000);
+      break;
+
+    case ESP_ZB_ZDO_SIGNAL_PRODUCTION_CONFIG_READY:
+      ESP_LOGI(TAG, "Zigbee production ready? %s", esp_err_to_name(status));
+      break;
+
+    case ESP_ZB_ZDO_DEVICE_UNAVAILABLE:
+      const esp_zb_zdo_device_unavailable_params_t *p =
+          (const esp_zb_zdo_device_unavailable_params_t *)signal_s->p_app_signal;
+
+      if (p) {
+        ESP_LOGW(TAG,
+                 "ZDO DEVICE_UNAVAILABLE status=%s short=0x%04hx ieee=%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                 esp_err_to_name(status),
+                 p->short_addr,
+                 p->long_addr[7], p->long_addr[6], p->long_addr[5], p->long_addr[4],
+                 p->long_addr[3], p->long_addr[2], p->long_addr[1], p->long_addr[0]);
+      } else {
+        ESP_LOGW(TAG, "ZDO DEVICE_UNAVAILABLE status=%s (no params for %d)", esp_err_to_name(status), signal_s->p_app_signal);
+      }
       break;
 
     default:
@@ -495,9 +547,8 @@ static void zigbee_task(void *pv) {
     },
   };
 
-  esp_zb_sleep_enable(true);
-  esp_zb_set_rx_on_when_idle(false);
   esp_zb_init(&zb_cfg);
+  esp_zb_set_primary_network_channel_set(0x07FFF800); // set all channels
   // esp_zb_zcl_analog_input_init_server();
   esp_zb_zcl_rel_humidity_measurement_init_server();
 
@@ -528,6 +579,12 @@ static void zigbee_task(void *pv) {
 
   esp_zb_device_register(ep_list);
   esp_zb_nvram_erase_at_start(get_cfg_flag(CFG_FLAG_RESET));
+
+  if (get_cfg_flag(CFG_FLAG_RESET)) {
+    ESP_LOGI(TAG, "Resetting due to user flag...");
+    set_cfg_flag(CFG_FLAG_RESET, false);
+    cfg_save();
+  }
   esp_zb_start(false);
   esp_zb_stack_main_loop();
   vTaskDelete(NULL);
@@ -568,6 +625,27 @@ void zb_report_sensors() {
   esp_zb_lock_release();
 }
 
+static void zb_send_battery_reports_now(void){
+  esp_zb_zcl_report_attr_cmd_t cmd = {0};
+
+  cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_SHORT_ADDR;
+  cmd.zcl_basic_cmd.src_endpoint = EP_WATER;
+  cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
+  cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+
+  // Server -> Client report (matches Espressif doc example usage)
+  cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+  cmd.clusterID  = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+
+  // Report BatteryVoltage
+  cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID;
+  esp_zb_zcl_report_attr_cmd_req(&cmd);
+
+  // Report BatteryPercentageRemaining
+  cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID;
+  esp_zb_zcl_report_attr_cmd_req(&cmd);
+}
+
 void zb_report_battery() {
   zb_get_battery();
   esp_zb_lock_acquire(portMAX_DELAY);
@@ -587,11 +665,11 @@ void zb_report_battery() {
       &s_battery_percent,
       false
   );
+  zb_send_battery_reports_now();
   esp_zb_lock_release();
 }
 
 void zb_start(void) {
-  zb_load_mac_addr();
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  // vTaskDelay(pdMS_TO_TICKS(1000));
   xTaskCreate(zigbee_task, "zigbee_task", 0x2000, NULL, 5, NULL);
 }

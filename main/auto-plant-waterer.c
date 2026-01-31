@@ -17,6 +17,7 @@
 static const char *TAG = "main";
 
 static void warning_task(void* pv) {
+  wait_for_join();
   vTaskDelay(pdMS_TO_TICKS(60000));
   while (true) {
     const struct WaterLevel* wl = get_water_level();
@@ -55,17 +56,17 @@ void app_main(void) {
   ESP_LOGI(TAG, "Starting2...");
   shared_start();
   cfg_start();
-  battery_start();
-  set_cfg_flag(CFG_FLAG_TOF, tof_start() == ESP_OK);
-  pumps_start();
-  soil_start();
+  // battery_start();
+  // set_cfg_flag(CFG_FLAG_TOF, tof_start() == ESP_OK);
+  // pumps_start();
+  // soil_start();
   // wifi_start();
-  cfg_save();
+  // cfg_save();
 
   enable_power_management();
   pm_lock();
   zb_start();
-  xTaskCreate(warning_task, "warning_task", 0x1000, NULL, 2, NULL);
+  // xTaskCreate(warning_task, "warning_task", 0x1000, NULL, 2, NULL);
 
   ESP_LOGI(TAG, "Started %d zones.", get_num_zones());
 }

@@ -14,6 +14,7 @@ extern "C" {
 
 #define DEF_NUM_ZONES         3 // How many pumps/soil sensors?
 #define DO_RESET              false
+#define DEV_MODE              false
 
 #define DEF_REPORTING_MIN_SEC   (60)
 #define DEF_REPORTING_MAX_SEC   (60 * 10)
@@ -31,6 +32,7 @@ extern "C" {
 #define KEY_AP_SSID        "ap_ssid"
 #define KEY_AP_PASS        "ap_pass"
 #define KEY_FLAGS          "flags"
+#define KEY_MAC            "mac"
 #define KEY_NUM_ZONES       "num_zones"
 
 typedef enum {
@@ -63,6 +65,8 @@ bool get_cfg_flag(cfg_flag_t flag);
 
 void set_num_zones(uint8_t num_zones);
 uint8_t get_num_zones();
+
+const char* get_mac_addr();
 
 esp_err_t cfg_save(void);
 

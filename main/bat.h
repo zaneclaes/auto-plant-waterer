@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define VOLTAGE_MIN 3.3f
-#define VOLTAGE_MAX 4.1f
+#define VOLTAGE_MAX 4.0f
 
 #define PIN_BAT             (GPIO_NUM_5) // MTDI (on back)
 
