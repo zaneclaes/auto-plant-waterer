@@ -400,7 +400,6 @@ static void on_zb_joined() {
   for (uint8_t i = 0; i < num_zones; i++) {
     soil_level_bind_to_coordinator(i);
   }
-  zb_report_battery();
 }
 
 static bool zb_check_joined() {
@@ -596,78 +595,80 @@ static void zigbee_task(void *pv) {
  * Start & Report Public Interface
  * ----------------------------- */
 
-void zb_report_sensors() {
+// static void zb_send_battery_reports_now(void){
+//   esp_zb_zcl_report_attr_cmd_t cmd = {0};
+//
+//   cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_SHORT_ADDR;
+//   cmd.zcl_basic_cmd.src_endpoint = EP_WATER;
+//   cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
+//   cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+//
+//   // Server -> Client report (matches Espressif doc example usage)
+//   cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+//   cmd.clusterID  = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
+//
+//   // Report BatteryVoltage
+//   cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID;
+//   esp_zb_zcl_report_attr_cmd_req(&cmd);
+//
+//   // Report BatteryPercentageRemaining
+//   cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID;
+//   esp_zb_zcl_report_attr_cmd_req(&cmd);
+// }
+
+void zb_report(bool sensors, bool battery) {
   uint8_t num_zones = get_num_zones();
-  const struct WaterLevel* wl = get_water_level();
-  s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
-  for (uint8_t i = 0; i < num_zones; i++) {
-    const struct SoilLevel* sl = get_soil_level(i);
-    s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
+  if (sensors) {
+    const struct WaterLevel* wl = get_water_level();
+    s_water_level_pct_x100 = (uint16_t) wl->percent * 100;
+    for (uint8_t i = 0; i < num_zones; i++) {
+      const struct SoilLevel* sl = get_soil_level(i);
+      s_soil_level_pct_x100[i] = (uint16_t) sl->percent * 100;
+    }
   }
+  if (battery) zb_get_battery();
 
   esp_zb_lock_acquire(portMAX_DELAY);
-  esp_zb_zcl_set_attribute_val(
-    EP_WATER,
-    ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
-    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-    ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-    &s_water_level_pct_x100,
-    false
-  );
-  for (uint8_t i = 0; i < num_zones; i++) {
+  if (sensors) {
     esp_zb_zcl_set_attribute_val(
-      get_soil_level_endpoint(i),
+      EP_WATER,
       ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
       ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
-      &s_soil_level_pct_x100[i],
+      &s_water_level_pct_x100,
       false
     );
-  }
-  esp_zb_lock_release();
-}
-
-static void zb_send_battery_reports_now(void){
-  esp_zb_zcl_report_attr_cmd_t cmd = {0};
-
-  cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_SHORT_ADDR;
-  cmd.zcl_basic_cmd.src_endpoint = EP_WATER;
-  cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_ENDPOINT;
-  cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-
-  // Server -> Client report (matches Espressif doc example usage)
-  cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
-  cmd.clusterID  = ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG;
-
-  // Report BatteryVoltage
-  cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID;
-  esp_zb_zcl_report_attr_cmd_req(&cmd);
-
-  // Report BatteryPercentageRemaining
-  cmd.attributeID = ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID;
-  esp_zb_zcl_report_attr_cmd_req(&cmd);
-}
-
-void zb_report_battery() {
-  zb_get_battery();
-  esp_zb_lock_acquire(portMAX_DELAY);
-  esp_zb_zcl_set_attribute_val(
-      EP_WATER,
-      ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
-      &s_battery_voltage,
-      false
+    for (uint8_t i = 0; i < num_zones; i++) {
+      esp_zb_zcl_set_attribute_val(
+        get_soil_level_endpoint(i),
+        ESP_ZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_VALUE_ID,
+        &s_soil_level_pct_x100[i],
+        false
       );
-  esp_zb_zcl_set_attribute_val(
-      EP_WATER,
-      ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
-      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-      ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
-      &s_battery_percent,
-      false
-  );
-  zb_send_battery_reports_now();
+    }
+  }
+
+  if (battery) {
+    esp_zb_zcl_set_attribute_val(
+        EP_WATER,
+        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_VOLTAGE_ID,
+        &s_battery_voltage,
+        false
+        );
+    esp_zb_zcl_set_attribute_val(
+        EP_WATER,
+        ESP_ZB_ZCL_CLUSTER_ID_POWER_CONFIG,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_POWER_CONFIG_BATTERY_PERCENTAGE_REMAINING_ID,
+        &s_battery_percent,
+        false
+    );
+    // zb_send_battery_reports_now();
+  }
   esp_zb_lock_release();
 }
 

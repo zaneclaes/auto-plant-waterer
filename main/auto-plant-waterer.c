@@ -11,7 +11,6 @@
 #include "soil.h"
 #include "tof.h"
 #include "zb.h"
-#include "zb_test.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

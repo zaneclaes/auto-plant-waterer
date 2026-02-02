@@ -16,13 +16,16 @@ extern "C" {
 #define DO_RESET              false
 #define DEV_MODE              false
 
-#define KEEP_ALIVE_INTERVAL_MS  (60 * 1000) // should be larger than DEF_REPORTING_MIN_SEC so keep alive doesn't fire
+#define REPORT_AVG_CNT          5 // smooth battery/sensors over this many readings (happens every REPORT_SLEEP_SEC)
+#define REPORT_SLEEP_SEC        (60) // How long to sleep the reporting thread (sensors get checked this often)
 
-#define DEF_REPORTING_MIN_SEC   (60)
-#define DEF_REPORTING_MAX_SEC   (60 * 10)
+#define DEF_REPORTING_MIN_SEC   (REPORT_SLEEP_SEC * REPORT_AVG_CNT) // Don't send until we have a whole new set of data
+#define DEF_REPORTING_MAX_SEC   (60 * 30)
 
-#define BAT_REPORTING_MIN_SEC   (60 * 5)
+#define BAT_REPORTING_MIN_SEC   (60 * 30) // How long before actually sending the battery to the controller
 #define BAT_REPORTING_MAX_SEC   (60 * 60)
+
+#define KEEP_ALIVE_INTERVAL_MS  (60 * 1000) // should be larger than DEF_REPORTING_MIN_SEC so keep alive doesn't fire
 
 #define ZB_MANUFACTURER_NAME "\x0b" "inZania LLC"
 #define ZB_MODEL_IDENTIFIER  "\x13" "Auto Plant Waterer"

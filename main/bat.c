@@ -36,7 +36,6 @@ void battery_start(void){
   if (err != ESP_OK) {
     adc_cali_handle = NULL;
   }
-  update_battery();
 }
 
 void enable_power_management(void) {

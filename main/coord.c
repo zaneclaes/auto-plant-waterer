@@ -146,43 +146,42 @@ static void timed_water(uint8_t idx, uint16_t sec) {
   pump_set(idx, false);
 }
 
+static void read_all_sensors(void) {
+  uint8_t num_zones = get_num_zones();
+  update_water_level();
+  soil_enable();
+  for (uint8_t i = 0; i < num_zones; i++) {
+    update_soil_level(i);
+  }
+  soil_disable();
+
+  for (uint8_t i = 0; i < num_zones; i++) {
+    const struct SoilLevel* sl = get_soil_level(i);
+    if (sl->percent < 10) {
+      timed_water(i, 10);
+    }
+  }
+  update_battery();
+}
 
 static void report_task(void *pv) {
   ESP_LOGI(TAG, "Starting reporting...");
   uint32_t sec_since_bat = 0;
+  uint32_t sec_since_sensors = 0;
+  uint32_t read_cnt = 0;
   while (is_joined()) {
-    bool ready = is_ready();
-    // xEventGroupSetBits(s_zb_events, ZB_REPORTING_BIT);
-    // if (ready)  pm_lock();
+    read_all_sensors();
 
-    uint8_t num_zones = get_num_zones();
-    update_water_level();
-    soil_enable();
-    for (uint8_t i = 0; i < num_zones; i++) {
-      update_soil_level(i);
-    }
-    soil_disable();
+    bool sensors = read_cnt <= REPORT_AVG_CNT || sec_since_sensors > BAT_REPORTING_MIN_SEC;
+    bool battery = read_cnt <= REPORT_AVG_CNT || sec_since_bat > BAT_REPORTING_MIN_SEC;
+    if (sensors || battery) zb_report(sensors, battery);
+    if (sensors) sec_since_sensors = 0;
+    if (battery) sec_since_bat = 0;
 
-    for (uint8_t i = 0; i < num_zones; i++) {
-      const struct SoilLevel* sl = get_soil_level(i);
-      if (sl->percent < 10) {
-        timed_water(i, 10);
-      }
-    }
-
-    zb_report_sensors();
-    if (!ready || sec_since_bat > BAT_REPORTING_MIN_SEC) {
-      update_battery();
-      zb_report_battery();
-      sec_since_bat = 0;
-    }
-    // if (ready) {
-    //   vTaskDelay(pdMS_TO_TICKS(1000));
-    //   pm_lock_release();
-    // }
-    // xEventGroupClearBits(s_zb_events, ZB_REPORTING_BIT);
-    vTaskDelay(pdMS_TO_TICKS(DEF_REPORTING_MIN_SEC * 1000));
-    sec_since_bat += DEF_REPORTING_MIN_SEC;
+    read_cnt++;
+    vTaskDelay(pdMS_TO_TICKS(REPORT_SLEEP_SEC * 1000));
+    sec_since_bat += REPORT_SLEEP_SEC;
+    sec_since_sensors += REPORT_SLEEP_SEC;
   }
   ESP_LOGI(TAG, "Reporting ended");
   vTaskDelete(NULL);
@@ -236,6 +235,24 @@ esp_err_t adc_shared_read(const adc_channel_t ch, int* raw) {
   return adc_oneshot_read(adc_handle, ch, raw);
 }
 
+static int s_moving_avg[10][REPORT_AVG_CNT-1] = {};
+static int moving_avg(uint8_t channel, int value) {
+  long sum = value;
+  int cnt = 1;
+  // ESP_LOGI(TAG, "Moving Avg #%u: %d %d %d %d %d", channel,
+  //   s_moving_avg[channel][0], s_moving_avg[channel][1], s_moving_avg[channel][2],
+  //   s_moving_avg[channel][3], value);
+  for (uint8_t i=0; i<(REPORT_AVG_CNT-1); i++) {
+    if (s_moving_avg[channel][i] != 0) {
+      sum += s_moving_avg[channel][i];
+      cnt++;
+    }
+    if (i<(REPORT_AVG_CNT-2))  s_moving_avg[channel][i] = s_moving_avg[channel][i+1];
+  }
+  s_moving_avg[channel][REPORT_AVG_CNT-2] = value;
+  return sum / cnt;
+}
+
 #define NUM_SAMPLES        8
 #define SAMPLE_DELAY_MS    5
 esp_err_t adc_read_avg(const adc_channel_t ch, int* out) {
@@ -247,7 +264,7 @@ esp_err_t adc_read_avg(const adc_channel_t ch, int* out) {
     sum += raw;
     vTaskDelay(pdMS_TO_TICKS(SAMPLE_DELAY_MS));
   }
-  *out = sum / NUM_SAMPLES;
+  *out = moving_avg(ch, sum / NUM_SAMPLES);
   return ESP_OK;
 }
 
@@ -256,7 +273,7 @@ void on_joined() {
     set_cfg_flag(CFG_FLAG_RESET, false);
     cfg_save();
   }
-  pm_release_after_ms(10000);
+  pm_release_after_ms(90000);
   set_joined(true);
   set_joining(false);
   xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
