@@ -16,6 +16,8 @@ extern "C" {
 #define DO_RESET              false
 #define DEV_MODE              false
 
+#define KEEP_ALIVE_INTERVAL_MS  (60 * 1000) // should be larger than DEF_REPORTING_MIN_SEC so keep alive doesn't fire
+
 #define DEF_REPORTING_MIN_SEC   (60)
 #define DEF_REPORTING_MAX_SEC   (60 * 10)
 

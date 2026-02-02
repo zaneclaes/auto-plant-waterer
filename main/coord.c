@@ -45,37 +45,46 @@ void dump_tasks_once(void) {
  * Events / signaling for joining
  * ----------------------------- */
 
-static EventGroupHandle_t s_zb_events;
+// static EventGroupHandle_t s_zb_events;
 #define ZB_JOINED_BIT     BIT0
 #define ZB_JOINING_BIT    BIT1
 #define ZB_READY_BIT      BIT2
 #define ZB_REPORTING_BIT  BIT3
 
-bool is_joined(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0; }
-bool is_joining(void) { return (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0; }
-bool is_ready(void) { return (xEventGroupGetBits(s_zb_events) & ZB_READY_BIT) != 0; }
-bool is_reporting(void) { return (xEventGroupGetBits(s_zb_events) & ZB_REPORTING_BIT) != 0; }
+static bool s_joined = false;
+static bool s_joining = false;
+static bool s_ready = false;
+static bool s_reporting = false;
+
+bool is_joined(void) { return s_joined; } // (xEventGroupGetBits(s_zb_events) & ZB_JOINED_BIT) != 0; }
+bool is_joining(void) { return s_joining; }//  (xEventGroupGetBits(s_zb_events) & ZB_JOINING_BIT) != 0; }
+bool is_ready(void) { return s_ready; }// (xEventGroupGetBits(s_zb_events) & ZB_READY_BIT) != 0; }
+bool is_reporting(void) { return s_reporting; } // (xEventGroupGetBits(s_zb_events) & ZB_REPORTING_BIT) != 0; }
 
 void set_joined(bool joined) {
-  if (joined) xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
-  else xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
+  s_joined = joined;
+  // if (joined) xEventGroupSetBits(s_zb_events, ZB_JOINED_BIT);
+  // else xEventGroupClearBits(s_zb_events, ZB_JOINED_BIT);
 }
 
 void set_joining(bool joining) {
-  if (joining) xEventGroupSetBits(s_zb_events, ZB_JOINING_BIT);
-  else xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
+  s_joining = joining;
+  // if (joining) xEventGroupSetBits(s_zb_events, ZB_JOINING_BIT);
+  // else xEventGroupClearBits(s_zb_events, ZB_JOINING_BIT);
 }
 
 void set_ready(bool ready) {
+  s_ready = ready;
   if (ready) {
-    xEventGroupSetBits(s_zb_events, ZB_READY_BIT);
+    // xEventGroupSetBits(s_zb_events, ZB_READY_BIT);
     zb_on_ready();
   }
-  else xEventGroupClearBits(s_zb_events, ZB_READY_BIT);
+  // else xEventGroupClearBits(s_zb_events, ZB_READY_BIT);
 }
 
 void wait_for_join(void) {
-  xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+  while (!is_joined()) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+  // xEventGroupWaitBits(s_zb_events, ZB_JOINED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 }
 
 /* -----------------------------
@@ -83,7 +92,7 @@ void wait_for_join(void) {
  * ----------------------------- */
 
 static esp_pm_lock_handle_t s_pm_no_ls_lock;
-static esp_pm_lock_handle_t s_pm_cpu_max_lock;
+// static esp_pm_lock_handle_t s_pm_cpu_max_lock;
 static esp_timer_handle_t s_release_timer;
 
 void pm_lock(void) {
@@ -91,19 +100,19 @@ void pm_lock(void) {
   if (!s_pm_no_ls_lock) {
     ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "zb_join", &s_pm_no_ls_lock));
   }
-  if (!s_pm_cpu_max_lock) {
-    ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "zb_join_cpu", &s_pm_cpu_max_lock));
-  }
+  // if (!s_pm_cpu_max_lock) {
+  //   ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "zb_join_cpu", &s_pm_cpu_max_lock));
+  // }
   ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_no_ls_lock));
-  ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
+  // ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_cpu_max_lock));
 }
 
 static void pm_lock_release(void) {
+  ESP_LOGI(TAG, "Resuming power management %d...", s_pm_no_ls_lock ? 1 : 0);
   if (s_pm_no_ls_lock) {
-    ESP_LOGI(TAG, "Resuming power management...");
     esp_pm_lock_release(s_pm_no_ls_lock);
   }
-  if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
+  // if (s_pm_cpu_max_lock) esp_pm_lock_release(s_pm_cpu_max_lock);
 }
 
 static void pm_lock_release_after_join(void *arg) {
@@ -112,7 +121,7 @@ static void pm_lock_release_after_join(void *arg) {
     return;
   }
   pm_lock_release();
-  set_ready(true);
+  // set_ready(true);
 }
 
 void pm_release_after_ms(uint32_t ms) {
@@ -191,7 +200,7 @@ static void report_task(void *pv) {
 
 void shared_start() {
   ESP_LOGI(TAG, "Shared Start...");
-  s_zb_events = xEventGroupCreate();
+  // s_zb_events = xEventGroupCreate();
   gpio_config_t cfg = {
     .pin_bit_mask = 1ULL << PIN_LED,
     .mode = GPIO_MODE_OUTPUT,
@@ -202,11 +211,11 @@ void shared_start() {
   ESP_ERROR_CHECK(gpio_config(&cfg));
   set_led(true);
 
-  // adc_oneshot_unit_init_cfg_t init_cfg = {
-  //   .unit_id = SHARED_ADC_UNIT,
-  //   .ulp_mode = ADC_ULP_MODE_DISABLE,
-  // };
-  // ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
+  adc_oneshot_unit_init_cfg_t init_cfg = {
+    .unit_id = SHARED_ADC_UNIT,
+    .ulp_mode = ADC_ULP_MODE_DISABLE,
+  };
+  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &adc_handle));
 }
 
 adc_channel_t adc_start(int pin) {
@@ -247,10 +256,10 @@ void on_joined() {
     set_cfg_flag(CFG_FLAG_RESET, false);
     cfg_save();
   }
-  pm_release_after_ms(30000);
+  pm_release_after_ms(10000);
   set_joined(true);
   set_joining(false);
-  // xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
+  xTaskCreate(report_task, "report_task", 0x1000, NULL, 4, NULL);
   set_led(false);
   // xTaskCreate(battery_task, "battery_task", 0x1000, NULL, 3, NULL);
 }

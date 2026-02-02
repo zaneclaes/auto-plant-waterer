@@ -5,11 +5,13 @@
 #include "bat.h"
 #include "cfg.h"
 #include "coord.h"
+#include "nvs_flash.h"
 #include "portmacro.h"
 #include "pumps.h"
 #include "soil.h"
 #include "tof.h"
 #include "zb.h"
+#include "zb_test.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -52,21 +54,20 @@ static void warning_task(void* pv) {
 
 void app_main(void) {
   ESP_LOGI(TAG, "Starting...");
-  vTaskDelay(pdMS_TO_TICKS(500));
-  ESP_LOGI(TAG, "Starting2...");
   shared_start();
   cfg_start();
-  // battery_start();
-  // set_cfg_flag(CFG_FLAG_TOF, tof_start() == ESP_OK);
-  // pumps_start();
-  // soil_start();
+  battery_start();
+  set_cfg_flag(CFG_FLAG_TOF, tof_start() == ESP_OK);
+  pumps_start();
+  soil_start();
   // wifi_start();
-  // cfg_save();
+  cfg_save();
 
   enable_power_management();
   pm_lock();
   zb_start();
-  // xTaskCreate(warning_task, "warning_task", 0x1000, NULL, 2, NULL);
+  xTaskCreate(warning_task, "warning_task", 0x1000, NULL, 2, NULL);
+  // zb_test_main();
 
   ESP_LOGI(TAG, "Started %d zones.", get_num_zones());
 }
